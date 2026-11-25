@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.16)
 
 project(
     ktos_sdk
-    VERSION 1.0.3
+    VERSION 1.0.4
     LANGUAGES C RC
 )
 
@@ -53,6 +53,7 @@ add_library(
     src/transport_windows.c
     src/legacy.c
     src/image.c
+    src/vsa_gps.c
     src/ktos_protocol.c
     src/sha256.c
     "${CMAKE_CURRENT_BINARY_DIR}/version.rc"

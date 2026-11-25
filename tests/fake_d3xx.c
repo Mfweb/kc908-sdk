@@ -363,6 +363,26 @@ FAKE_API FT_WritePipe(void *handle, UCHAR pipe, void *buffer, ULONG bytes, ULONG
             memset(result_buf, 'a', 16000);
             memcpy(result_buf, "{\"ok\":true,\"data\":\"", 19);
             memcpy(result_buf + 16000 - 3, "\"}\n", 3);
+        } else if (strcmp(request_buf, "agent vsa") == 0) {
+            strcpy(result_buf,
+                   "{\"ok\":true,\"active\":1,\"running\":1,\"locked\":1,"
+                   "\"config\":{\"modulation_name\":\"16QAM\",\"symbols\":512},"
+                   "\"metrics\":{\"evm_rms_pct\":2.34,\"mer_db\":32.6}}\n");
+        } else if (strncmp(request_buf, "agent vsa_frame", 15) == 0) {
+            strcpy(result_buf,
+                   "{\"ok\":true,\"sequence\":7,\"modulation_name\":\"16QAM\","
+                   "\"points\":[[0.31,0.31]],\"spectrum_db\":[-30.0]}\n");
+        } else if (strcmp(request_buf, "agent gps") == 0) {
+            strcpy(result_buf,
+                   "{\"ok\":true,\"enabled\":1,\"active\":1,\"have_position\":true,"
+                   "\"fix\":{\"mode\":\"3d\",\"latitude\":36.6512000,\"longitude\":117.1200000},"
+                   "\"satellites_tracked\":6,\"satellites\":[{\"prn\":1,\"cn0_dbhz\":41.5}]}\n");
+        } else if (strncmp(request_buf, "agent gps_track", 15) == 0) {
+            strcpy(result_buf,
+                   "{\"ok\":true,\"count\":1,\"offset\":0,\"next\":1,\"done\":true,"
+                   "\"points\":[{\"lat\":36.6512000,\"lon\":117.1200000}]}\n");
+        } else if (strcmp(request_buf, "agent action gps_sync_location") == 0) {
+            strcpy(result_buf, "{\"ok\":false,\"code\":-11,\"error\":\"Try again\"}\n");
         } else {
             strcpy(result_buf, "{\"ok\":true}\n");
         }

@@ -54,6 +54,76 @@ typedef struct {
     char     device_path[256];
 } ktos_image_info;
 
+/* Vector Signal Analysis (VSA) enums and configuration mask. */
+enum ktos_vsa_modulation {
+    KTOS_VSA_MOD_BPSK      = 0,
+    KTOS_VSA_MOD_QPSK      = 1,
+    KTOS_VSA_MOD_OQPSK     = 2,
+    KTOS_VSA_MOD_PI4_DQPSK = 3,
+    KTOS_VSA_MOD_8PSK      = 4,
+    KTOS_VSA_MOD_16QAM     = 5,
+    KTOS_VSA_MOD_64QAM     = 6,
+    KTOS_VSA_MOD_2FSK      = 7,
+    KTOS_VSA_MOD_4FSK      = 8,
+    KTOS_VSA_MOD_MSK       = 9,
+    KTOS_VSA_MOD_GMSK      = 10
+};
+
+enum ktos_vsa_filter {
+    KTOS_VSA_FILTER_RRC      = 0,
+    KTOS_VSA_FILTER_RC       = 1,
+    KTOS_VSA_FILTER_GAUSSIAN = 2,
+    KTOS_VSA_FILTER_RECT     = 3
+};
+
+enum ktos_vsa_equalizer {
+    KTOS_VSA_EQ_OFF      = 0,
+    KTOS_VSA_EQ_ADAPTIVE = 1
+};
+
+enum ktos_vsa_view {
+    KTOS_VSA_VIEW_SPECTRUM = 0,
+    KTOS_VSA_VIEW_EYE      = 1,
+    KTOS_VSA_VIEW_EVM      = 2
+};
+
+enum ktos_vsa_config_mask {
+    KTOS_VSA_CFG_FREQUENCY     = 1u << 0,
+    KTOS_VSA_CFG_MODULATION    = 1u << 1,
+    KTOS_VSA_CFG_SYMBOL_RATE   = 1u << 2,
+    KTOS_VSA_CFG_FILTER        = 1u << 3,
+    KTOS_VSA_CFG_ALPHA         = 1u << 4,
+    KTOS_VSA_CFG_EQUALIZER     = 1u << 5,
+    KTOS_VSA_CFG_SYMBOLS       = 1u << 6,
+    KTOS_VSA_CFG_AVERAGE       = 1u << 7,
+    KTOS_VSA_CFG_FSK_DEVIATION = 1u << 8,
+    KTOS_VSA_CFG_PORT          = 1u << 9,
+    KTOS_VSA_CFG_ATT           = 1u << 10,
+    KTOS_VSA_CFG_AMP           = 1u << 11,
+    KTOS_VSA_CFG_IF_GAIN       = 1u << 12,
+    KTOS_VSA_CFG_ALL           = (1u << 13) - 1u
+};
+
+typedef struct {
+    uint32_t mask;
+    uint32_t modulation;
+    uint32_t filter;
+    uint32_t equalizer;
+    uint32_t symbols;
+    uint32_t average;
+    uint32_t port;
+    uint32_t att_db;
+    uint32_t amp_mode;
+    uint32_t if_gain_db;
+    double   frequency_hz;
+    double   symbol_rate_hz;
+    double   alpha;
+    double   fsk_deviation_hz;
+} ktos_vsa_config;
+
+/* Sentinel for ktos_gps_sync_clock() to derive timezone from GPS coordinates. */
+#define KTOS_GPS_TZ_AUTO INT32_MIN
+
 /* -------------------------------------------------------------------------- */
 /* Lifecycle and diagnostics                                                  */
 /* -------------------------------------------------------------------------- */
@@ -87,6 +157,66 @@ KTOS_API int KTOS_CALL ktos_error(ktos_device *device, char *text, uint32_t capa
  * Returning -ENOSPC never retries a potentially mutating command. */
 KTOS_API int KTOS_CALL ktos_rpc(ktos_device *device, const char *command, char *json,
                                 uint32_t capacity, uint32_t *needed);
+
+/* -------------------------------------------------------------------------- */
+/* Vector Signal Analysis (VSA) control and telemetry (KTOS MCP mode)         */
+/* -------------------------------------------------------------------------- */
+
+/* Switches the instrument into VSA mode (mode 6). */
+KTOS_API int KTOS_CALL ktos_vsa_enter(ktos_device *device);
+
+/* Applies every VSA setting enabled in `config->mask`. Stops on first error. */
+KTOS_API int KTOS_CALL ktos_vsa_configure(ktos_device *device, const ktos_vsa_config *config);
+
+/* Selects a built-in VSA modulation preset (0..6). */
+KTOS_API int KTOS_CALL ktos_vsa_preset(ktos_device *device, uint32_t preset);
+
+/* Starts continuous VSA acquisition, stops VSA, or triggers one single shot. */
+KTOS_API int KTOS_CALL ktos_vsa_start(ktos_device *device);
+KTOS_API int KTOS_CALL ktos_vsa_stop(ktos_device *device);
+KTOS_API int KTOS_CALL ktos_vsa_single(ktos_device *device);
+
+/* Clears constellation persistence or selects secondary plot view (0..2). */
+KTOS_API int KTOS_CALL ktos_vsa_clear_persist(ktos_device *device);
+KTOS_API int KTOS_CALL ktos_vsa_view(ktos_device *device, uint32_t view);
+
+/* Reads live VSA configuration, lock flags, and vector demodulation metrics as
+ * a NUL-terminated UTF-8 JSON object. */
+KTOS_API int KTOS_CALL ktos_vsa_status(ktos_device *device, char *json, uint32_t capacity,
+                                       uint32_t *needed);
+
+/* Reads the latest VSA measurement frame as UTF-8 JSON.
+ * `section` may be NULL/"all", "summary", "constellation", "spectrum", "evm", or "eye". */
+KTOS_API int KTOS_CALL ktos_vsa_frame(ktos_device *device, const char *section, char *json,
+                                      uint32_t capacity, uint32_t *needed);
+
+/* -------------------------------------------------------------------------- */
+/* Software GPS L1 control and telemetry (KTOS MCP mode)                      */
+/* -------------------------------------------------------------------------- */
+
+/* Enters software GPS L1 mode (1575.42 MHz). Set `open_page` non-zero to display
+ * the full-screen GPS status view on the instrument. */
+KTOS_API int KTOS_CALL ktos_gps_start(ktos_device *device, uint32_t open_page);
+
+/* Leaves software GPS L1 mode and restores normal receiver demodulation. */
+KTOS_API int KTOS_CALL ktos_gps_stop(ktos_device *device);
+
+/* Reads live GPS fix, UTC time, tracked satellites, and track summary as UTF-8 JSON. */
+KTOS_API int KTOS_CALL ktos_gps_status(ktos_device *device, char *json, uint32_t capacity,
+                                       uint32_t *needed);
+
+/* Reads paginated GPS track points (`limit` in 1..200; 0 uses default 64). */
+KTOS_API int KTOS_CALL ktos_gps_track(ktos_device *device, uint32_t offset, uint32_t limit,
+                                      char *json, uint32_t capacity, uint32_t *needed);
+
+/* Applies current GPS fix to device location or syncs RTC + timezone
+ * (`timezone_quarters` in -48..56, or KTOS_GPS_TZ_AUTO). */
+KTOS_API int KTOS_CALL ktos_gps_sync_location(ktos_device *device);
+KTOS_API int KTOS_CALL ktos_gps_sync_clock(ktos_device *device, int32_t timezone_quarters);
+
+/* Exports the recorded GPS track as GPX under /mnt/sdcard/tracks/ or clears it. */
+KTOS_API int KTOS_CALL ktos_gps_track_save(ktos_device *device);
+KTOS_API int KTOS_CALL ktos_gps_track_reset(ktos_device *device);
 
 /* -------------------------------------------------------------------------- */
 /* Binary SD image transfer (KTOS System >= 1.0.9)                            */

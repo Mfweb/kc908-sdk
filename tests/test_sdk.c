@@ -20,7 +20,7 @@
 #include <windows.h>
 
 int main(void) {
-    assert(ktos_sdk_version() == 0x00010003);
+    assert(ktos_sdk_version() == 0x00010004);
 
     /* Open failure diagnostics via thread-local FLS storage. */
     for (unsigned kind = 1; kind <= 2; kind++) {
@@ -44,7 +44,7 @@ int main(void) {
 
         char info[512];
         assert(ktos_identity(device, info, sizeof(info)) == 0);
-        assert(strstr(info, "\"sdk\":\"1.0.3\""));
+        assert(strstr(info, "\"sdk\":\"1.0.4\""));
         assert(strstr(info, mode ? "\"backend\":\"KTOS\"" : "\"backend\":\"original\""));
 
         if (mode > 0) {
@@ -101,6 +101,53 @@ int main(void) {
             assert(ktos_rpc(device, "fft", json, 16, &needed) < 0 && needed == 16001);
             assert(ktos_rpc(device, "action run\naction stop", json, 65537, &needed) < 0);
             assert(ktos_rpc(device, "capabilities", json, 65537, &needed) == 0);
+
+            /* VSA C convenience API coverage. */
+            assert(ktos_vsa_enter(device) == 0);
+            ktos_vsa_config vsa_cfg = {
+                .mask           = KTOS_VSA_CFG_FREQUENCY | KTOS_VSA_CFG_MODULATION |
+                                  KTOS_VSA_CFG_SYMBOL_RATE | KTOS_VSA_CFG_FILTER |
+                                  KTOS_VSA_CFG_ALPHA | KTOS_VSA_CFG_SYMBOLS | KTOS_VSA_CFG_PORT,
+                .frequency_hz   = 433920000.0,
+                .modulation     = KTOS_VSA_MOD_16QAM,
+                .symbol_rate_hz = 100000.0,
+                .filter         = KTOS_VSA_FILTER_RRC,
+                .alpha          = 0.35,
+                .symbols        = 512,
+                .port           = 2,
+            };
+            assert(ktos_vsa_configure(device, &vsa_cfg) == 0);
+            ktos_vsa_config bad_cfg = {.mask = 0};
+            assert(ktos_vsa_configure(device, &bad_cfg) < 0);
+            assert(ktos_vsa_preset(device, 1) == 0);
+            assert(ktos_vsa_preset(device, 99) < 0);
+            assert(ktos_vsa_view(device, KTOS_VSA_VIEW_EVM) == 0);
+            assert(ktos_vsa_view(device, 9) < 0);
+            assert(ktos_vsa_clear_persist(device) == 0);
+            assert(ktos_vsa_single(device) == 0);
+            assert(ktos_vsa_start(device) == 0);
+            assert(ktos_vsa_status(device, json, 65537, &needed) == 0);
+            assert(strstr(json, "\"modulation_name\":\"16QAM\""));
+            assert(ktos_vsa_frame(device, "constellation", json, 65537, &needed) == 0);
+            assert(strstr(json, "\"points\":[[0.31,0.31]]"));
+            assert(ktos_vsa_frame(device, "invalid", json, 65537, &needed) < 0);
+            assert(ktos_vsa_stop(device) == 0);
+
+            /* GPS L1 C convenience API coverage. */
+            assert(ktos_gps_start(device, 1) == 0);
+            assert(ktos_gps_start(device, 2) < 0);
+            assert(ktos_gps_status(device, json, 65537, &needed) == 0);
+            assert(strstr(json, "\"mode\":\"3d\"") && strstr(json, "\"satellites_tracked\":6"));
+            assert(ktos_gps_track(device, 0, 0, json, 65537, &needed) == 0);
+            assert(strstr(json, "\"points\":[{\"lat\":36.6512000"));
+            assert(ktos_gps_track(device, 0, 201, json, 65537, &needed) < 0);
+            assert(ktos_gps_sync_location(device) == -11); /* Device EAGAIN propagated */
+            assert(ktos_gps_sync_clock(device, KTOS_GPS_TZ_AUTO) == 0);
+            assert(ktos_gps_sync_clock(device, 32) == 0);
+            assert(ktos_gps_sync_clock(device, 99) < 0);
+            assert(ktos_gps_track_save(device) == 0);
+            assert(ktos_gps_track_reset(device) == 0);
+            assert(ktos_gps_stop(device) == 0);
 
             /* Raw binary image transport bounds and echo check. */
             uint8_t binary[4016];
