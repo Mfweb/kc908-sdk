@@ -10,7 +10,7 @@
 - **预提交异步控制通道**：发送控制命令前先提交异步 IN 接收，避免主机调度延迟超过 FPGA 发送窗口。
 - **250 ms 保活心跳**：连接 KTOS 后端时自动维护保活（支持能力位时使用 `0xD1` 单向保活），主机异常断开后设备自动停发。
 - **高速重叠 IQ 流**：使用四个 1 MiB 重叠接收槽持续读取 FT601 数据，调用方可按任意 4 字节对齐块消费。
-- **控制 RPC 与二进制传输**：提供带 CRC-32 校验的分片 JSON 控制接口（`ktos_rpc`）、调制分析（VSA）与软件 GPS L1 封装接口（`ktos_vsa_*`、`ktos_gps_*`），以及带整文件 SHA-256 校验的图片上传/下载接口（`ktos_image_upload`、`ktos_image_download`、`ktos_image_request`）。
+- **控制 RPC 与二进制传输**：提供带 CRC-32 校验的分片 JSON 控制接口（`ktos_rpc`）、调制分析（VSA）、软件 GPS L1 与 DRM30/DRM+ 数字广播封装接口（`ktos_vsa_*`、`ktos_gps_*`、`ktos_drm_*`），以及带整文件 SHA-256 校验的图片上传/下载接口（`ktos_image_upload`、`ktos_image_download`、`ktos_image_request`）。
 - **原有上位机兼容**：导出 `kcsdr_init()` 26 项 Windows 1.3.4 函数表，供原有 32/64 位桌面软件直接替换使用（不含网络连接及私有工厂校准接口）。
 
 ## 目录结构
@@ -28,6 +28,7 @@
 │   ├── internal.h           # 内部设备状态与 D3XX 函数表定义
 │   ├── sdk.c                # 设备生命周期、协议协商、保活与分片 RPC
 │   ├── vsa_gps.c            # 调制分析（VSA）与软件 GPS L1 C 封装接口
+│   ├── drm.c                # DRM30 / DRM+ 数字广播 C 封装接口
 │   ├── transport_windows.c  # Windows FTDI D3XX 传输与重叠 IQ 队列
 │   ├── image.c              # 带 SHA-256 校验的高层图片上传/下载接口
 │   ├── legacy.c             # Windows 原版 1.3.4 26 项函数表适配层

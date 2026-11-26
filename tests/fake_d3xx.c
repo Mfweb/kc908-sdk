@@ -383,6 +383,16 @@ FAKE_API FT_WritePipe(void *handle, UCHAR pipe, void *buffer, ULONG bytes, ULONG
                    "\"points\":[{\"lat\":36.6512000,\"lon\":117.1200000}]}\n");
         } else if (strcmp(request_buf, "agent action gps_sync_location") == 0) {
             strcpy(result_buf, "{\"ok\":false,\"code\":-11,\"error\":\"Try again\"}\n");
+        } else if (strcmp(request_buf, "agent drm") == 0) {
+            strcpy(result_buf,
+                   "{\"ok\":true,\"enabled\":1,\"active\":1,\"state\":\"audio\","
+                   "\"lock\":{\"time\":true,\"frame\":true,\"fac\":true,\"sdc\":true,"
+                   "\"msc\":true,\"audio\":true},"
+                   "\"profile\":\"auto\",\"robustness_mode\":\"B\",\"snr_db\":19.5,"
+                   "\"services_count\":1,\"active_service\":0,"
+                   "\"services\":[{\"index\":0,\"id\":1193046,\"label\":\"CNR-1\","
+                   "\"audio\":true,\"codec\":\"xHE-AAC\"}],"
+                   "\"text\":\"DRM Live\"}\n");
         } else {
             strcpy(result_buf, "{\"ok\":true}\n");
         }

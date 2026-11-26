@@ -10,7 +10,7 @@ Windows C shared library for communicating with the KC908 over USB 3.0 (FTDI FT6
 - **Pre-armed asynchronous control I/O**: Arms overlapped IN transfers before control OUT writes to meet the FPGA's short TX-ready window.
 - **Keepalive heartbeat**: Sends 250 ms keepalives (one-way `0xD1` when supported) so the device safely stops remote output if the host disconnects.
 - **High-throughput IQ streaming**: Uses four 1 MiB overlapped RX slots on FT601 while letting callers consume arbitrary 4-byte-aligned blocks.
-- **Control RPC & binary transfer**: Fragmented, CRC-32-checked UTF-8 JSON RPC (`ktos_rpc`), typed VSA and software GPS L1 helpers (`ktos_vsa_*`, `ktos_gps_*`), and SHA-256-verified SD image upload/download (`ktos_image_upload`, `ktos_image_download`, `ktos_image_request`).
+- **Control RPC & binary transfer**: Fragmented, CRC-32-checked UTF-8 JSON RPC (`ktos_rpc`), typed VSA, software GPS L1, and DRM30/DRM+ helpers (`ktos_vsa_*`, `ktos_gps_*`, `ktos_drm_*`), and SHA-256-verified SD image upload/download (`ktos_image_upload`, `ktos_image_download`, `ktos_image_request`).
 - **Legacy ABI compatibility**: Exports `kcsdr_init()` with the exact 26-slot Windows 1.3.4 function table for existing desktop SDR software.
 
 ## Repository Layout
@@ -28,6 +28,7 @@ Windows C shared library for communicating with the KC908 over USB 3.0 (FTDI FT6
 │   ├── internal.h           # Internal device state and D3XX bindings
 │   ├── sdk.c                # Lifecycle, negotiation, heartbeat, RPC
 │   ├── vsa_gps.c            # Typed C wrappers for VSA and software GPS L1
+│   ├── drm.c                # Typed C wrappers for DRM30 / DRM+ digital broadcast
 │   ├── transport_windows.c  # Windows FTDI D3XX transport & overlapped IQ
 │   ├── image.c              # High-level SHA-256 image upload/download
 │   ├── legacy.c             # Windows vendor 1.3.4 compatibility table

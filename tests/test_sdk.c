@@ -20,7 +20,7 @@
 #include <windows.h>
 
 int main(void) {
-    assert(ktos_sdk_version() == 0x00010004);
+    assert(ktos_sdk_version() == 0x00010005);
 
     /* Open failure diagnostics via thread-local FLS storage. */
     for (unsigned kind = 1; kind <= 2; kind++) {
@@ -44,7 +44,7 @@ int main(void) {
 
         char info[512];
         assert(ktos_identity(device, info, sizeof(info)) == 0);
-        assert(strstr(info, "\"sdk\":\"1.0.4\""));
+        assert(strstr(info, "\"sdk\":\"1.0.5\""));
         assert(strstr(info, mode ? "\"backend\":\"KTOS\"" : "\"backend\":\"original\""));
 
         if (mode > 0) {
@@ -148,6 +148,38 @@ int main(void) {
             assert(ktos_gps_track_save(device) == 0);
             assert(ktos_gps_track_reset(device) == 0);
             assert(ktos_gps_stop(device) == 0);
+
+            /* DRM30 / DRM+ C convenience API coverage. */
+            assert(ktos_drm_start(device, 1) == 0);
+            assert(ktos_drm_start(device, 2) < 0);
+            ktos_drm_config drm_cfg = {
+                .mask          = KTOS_DRM_CFG_FREQUENCY | KTOS_DRM_CFG_PROFILE |
+                                 KTOS_DRM_CFG_SERVICE | KTOS_DRM_CFG_STEREO |
+                                 KTOS_DRM_CFG_IQ_INVERT,
+                .profile       = KTOS_DRM_PROFILE_DRM30_10K,
+                .service_index = 0,
+                .stereo        = 1,
+                .iq_invert     = KTOS_DRM_IQ_NORMAL,
+                .frequency_hz  = 9650000.0,
+            };
+            assert(ktos_drm_configure(device, &drm_cfg) == 0);
+            ktos_drm_config bad_drm_cfg = {.mask = 0};
+            assert(ktos_drm_configure(device, &bad_drm_cfg) < 0);
+            ktos_drm_config bad_drm_prof = {.mask = KTOS_DRM_CFG_PROFILE, .profile = 9};
+            assert(ktos_drm_configure(device, &bad_drm_prof) < 0);
+            assert(ktos_drm_select_service(device, 2) == 0);
+            assert(ktos_drm_select_service(device, 4) < 0);
+            assert(ktos_drm_set_profile(device, KTOS_DRM_PROFILE_DRMP_100K) == 0);
+            assert(ktos_drm_set_profile(device, 4) < 0);
+            assert(ktos_drm_set_stereo(device, 0) == 0);
+            assert(ktos_drm_set_stereo(device, 2) < 0);
+            assert(ktos_drm_set_iq_invert(device, KTOS_DRM_IQ_INVERT) == 0);
+            assert(ktos_drm_set_iq_invert(device, 3) < 0);
+            assert(ktos_drm_reset(device) == 0);
+            assert(ktos_drm_status(device, json, 65537, &needed) == 0);
+            assert(strstr(json, "\"state\":\"audio\"") && strstr(json, "\"label\":\"CNR-1\"") &&
+                   strstr(json, "\"text\":\"DRM Live\""));
+            assert(ktos_drm_stop(device) == 0);
 
             /* Raw binary image transport bounds and echo check. */
             uint8_t binary[4016];

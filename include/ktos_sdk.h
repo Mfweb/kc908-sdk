@@ -124,6 +124,38 @@ typedef struct {
 /* Sentinel for ktos_gps_sync_clock() to derive timezone from GPS coordinates. */
 #define KTOS_GPS_TZ_AUTO INT32_MIN
 
+/* Digital Radio Mondiale (DRM30 / DRM+) enums and configuration mask. */
+enum ktos_drm_profile {
+    KTOS_DRM_PROFILE_AUTO      = 0,
+    KTOS_DRM_PROFILE_DRM30_10K = 1,
+    KTOS_DRM_PROFILE_DRM30_20K = 2,
+    KTOS_DRM_PROFILE_DRMP_100K = 3
+};
+
+enum ktos_drm_iq_invert {
+    KTOS_DRM_IQ_AUTO   = 0,
+    KTOS_DRM_IQ_NORMAL = 1,
+    KTOS_DRM_IQ_INVERT = 2
+};
+
+enum ktos_drm_config_mask {
+    KTOS_DRM_CFG_FREQUENCY = 1u << 0,
+    KTOS_DRM_CFG_PROFILE   = 1u << 1,
+    KTOS_DRM_CFG_SERVICE   = 1u << 2,
+    KTOS_DRM_CFG_STEREO    = 1u << 3,
+    KTOS_DRM_CFG_IQ_INVERT = 1u << 4,
+    KTOS_DRM_CFG_ALL       = (1u << 5) - 1u
+};
+
+typedef struct {
+    uint32_t mask;
+    uint32_t profile;
+    uint32_t service_index;
+    uint32_t stereo;
+    uint32_t iq_invert;
+    double   frequency_hz;
+} ktos_drm_config;
+
 /* -------------------------------------------------------------------------- */
 /* Lifecycle and diagnostics                                                  */
 /* -------------------------------------------------------------------------- */
@@ -217,6 +249,34 @@ KTOS_API int KTOS_CALL ktos_gps_sync_clock(ktos_device *device, int32_t timezone
 /* Exports the recorded GPS track as GPX under /mnt/sdcard/tracks/ or clears it. */
 KTOS_API int KTOS_CALL ktos_gps_track_save(ktos_device *device);
 KTOS_API int KTOS_CALL ktos_gps_track_reset(ktos_device *device);
+
+/* -------------------------------------------------------------------------- */
+/* Digital Radio Mondiale (DRM30 / DRM+) control and telemetry (KTOS MCP mode)*/
+/* -------------------------------------------------------------------------- */
+
+/* Enters DRM30 / DRM+ reception mode. Set `open_page` non-zero to display
+ * the full-screen DRM details view on the instrument. */
+KTOS_API int KTOS_CALL ktos_drm_start(ktos_device *device, uint32_t open_page);
+
+/* Leaves DRM reception mode and restores normal receiver demodulation. */
+KTOS_API int KTOS_CALL ktos_drm_stop(ktos_device *device);
+
+/* Applies every DRM setting enabled in `config->mask`. Stops on first error. */
+KTOS_API int KTOS_CALL ktos_drm_configure(ktos_device *device, const ktos_drm_config *config);
+
+/* Selects active DRM service (0..3), profile (0..3), stereo (0..1), or IQ invert (0..2). */
+KTOS_API int KTOS_CALL ktos_drm_select_service(ktos_device *device, uint32_t service_index);
+KTOS_API int KTOS_CALL ktos_drm_set_profile(ktos_device *device, uint32_t profile);
+KTOS_API int KTOS_CALL ktos_drm_set_stereo(ktos_device *device, uint32_t enabled);
+KTOS_API int KTOS_CALL ktos_drm_set_iq_invert(ktos_device *device, uint32_t mode);
+
+/* Resets the DRM demodulator pipeline and re-acquires signal lock. */
+KTOS_API int KTOS_CALL ktos_drm_reset(ktos_device *device);
+
+/* Reads live DRM lock/PHY metrics, audio stats, services list, and text message
+ * as a NUL-terminated UTF-8 JSON object. */
+KTOS_API int KTOS_CALL ktos_drm_status(ktos_device *device, char *json, uint32_t capacity,
+                                       uint32_t *needed);
 
 /* -------------------------------------------------------------------------- */
 /* Binary SD image transfer (KTOS System >= 1.0.9)                            */
