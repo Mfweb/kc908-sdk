@@ -143,10 +143,11 @@ static int sdk_libusb_load(libusb_api *api) {
 
 #define LOAD_USB_PROC(member, symbol)                                                              \
     do {                                                                                           \
-        *(void **)&api->member = dlsym(api->module, symbol);                                       \
-        if (!api->member) {                                                                        \
+        void *sym_ = dlsym(api->module, symbol);                                                   \
+        if (!sym_) {                                                                               \
             goto fail;                                                                             \
         }                                                                                          \
+        memcpy(&api->member, &sym_, sizeof(api->member));                                          \
     } while (0)
 
     LOAD_USB_PROC(init, "libusb_init");
@@ -169,7 +170,8 @@ static int sdk_libusb_load(libusb_api *api) {
 
 #undef LOAD_USB_PROC
 
-    *(void **)&api->strerror = dlsym(api->module, "libusb_strerror");
+    void *strerror_sym = dlsym(api->module, "libusb_strerror");
+    memcpy(&api->strerror, &strerror_sym, sizeof(api->strerror));
     return 0;
 
 fail:

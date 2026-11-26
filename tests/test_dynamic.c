@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifdef _WIN32
 
@@ -45,9 +46,11 @@ int main(void) {
 
         HMODULE library = LoadLibraryW(L"kcsdr.dll");
         assert(library);
-        *(FARPROC *)&open_device = GetProcAddress(library, "ktos_open");
-        *(FARPROC *)&last_error  = GetProcAddress(library, "ktos_error");
-        assert(open_device && last_error);
+        FARPROC open_proc  = GetProcAddress(library, "ktos_open");
+        FARPROC error_proc = GetProcAddress(library, "ktos_error");
+        assert(open_proc && error_proc);
+        memcpy(&open_device, &open_proc, sizeof(open_device));
+        memcpy(&last_error, &error_proc, sizeof(last_error));
 
         SetEvent(ready);
         assert(WaitForSingleObject(thread, 10000) == WAIT_OBJECT_0);
@@ -107,9 +110,11 @@ int main(void) {
 
         void *library = dlopen("./libkcsdr.so", RTLD_NOW | RTLD_LOCAL);
         assert(library);
-        *(void **)&open_device = dlsym(library, "ktos_open");
-        *(void **)&last_error  = dlsym(library, "ktos_error");
-        assert(open_device && last_error);
+        void *open_sym  = dlsym(library, "ktos_open");
+        void *error_sym = dlsym(library, "ktos_error");
+        assert(open_sym && error_sym);
+        memcpy(&open_device, &open_sym, sizeof(open_device));
+        memcpy(&last_error, &error_sym, sizeof(last_error));
 
         pthread_mutex_lock(&ready_lock);
         is_ready = 1;

@@ -50,10 +50,11 @@ static int sdk_ft_load(ft_api *api) {
 
 #define LOAD_FT_PROC(member, symbol)                                                               \
     do {                                                                                           \
-        *(FARPROC *)&api->member = GetProcAddress(api->module, symbol);                            \
-        if (!api->member) {                                                                        \
+        FARPROC proc_ = GetProcAddress(api->module, symbol);                                       \
+        if (!proc_) {                                                                              \
             goto fail;                                                                             \
         }                                                                                          \
+        memcpy(&api->member, &proc_, sizeof(api->member));                                         \
     } while (0)
 
     LOAD_FT_PROC(list, "FT_CreateDeviceInfoList");

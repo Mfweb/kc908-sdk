@@ -164,7 +164,7 @@ jobs:
             processor: aarch64
             cc: aarch64-linux-gnu-gcc
             nm: aarch64-linux-gnu-nm
-            cross_pkg: "gcc-aarch64-linux-gnu qemu-user"
+            cross_pkg: "gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user"
             emulator: "qemu-aarch64"
             ld_prefix: "/usr/aarch64-linux-gnu"
             elf_machine: "AArch64"
@@ -172,7 +172,7 @@ jobs:
             processor: armv7l
             cc: arm-linux-gnueabihf-gcc
             nm: arm-linux-gnueabihf-nm
-            cross_pkg: "gcc-arm-linux-gnueabihf qemu-user"
+            cross_pkg: "gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user"
             emulator: "qemu-arm"
             ld_prefix: "/usr/arm-linux-gnueabihf"
             elf_machine: "ARM"
@@ -180,7 +180,7 @@ jobs:
             processor: i686
             cc: i686-linux-gnu-gcc
             nm: i686-linux-gnu-nm
-            cross_pkg: "gcc-i686-linux-gnu qemu-user"
+            cross_pkg: "gcc-i686-linux-gnu libc6-dev-i386-cross qemu-user"
             emulator: "qemu-i386"
             ld_prefix: "/usr/i686-linux-gnu"
             elf_machine: "Intel 80386"
@@ -193,7 +193,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get install -y \
             cmake ninja-build pkg-config libusb-1.0-0-dev ${{ matrix.cross_pkg }}
 
       - name: Configure, build, and run offline tests
