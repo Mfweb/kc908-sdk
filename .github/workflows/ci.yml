@@ -1,0 +1,343 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build-windows:
+    name: Build (${{ matrix.arch }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: windows-x64
+            msystem: MINGW64
+            mingw_arch: x86_64
+            pe_format: pei-x86-64
+          - arch: windows-x86
+            msystem: MINGW32
+            mingw_arch: i686
+            pe_format: pei-i386
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup MSYS2 (${{ matrix.msystem }})
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: >-
+            mingw-w64-${{ matrix.mingw_arch }}-gcc
+            mingw-w64-${{ matrix.mingw_arch }}-cmake
+            mingw-w64-${{ matrix.mingw_arch }}-ninja
+
+      - name: Configure, build, and run offline tests
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+      - name: Verify PE format, exports, and runtime DLL imports
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          objdump -f build/kcsdr.dll | tr -d '\r' | grep -F "file format ${{ matrix.pe_format }}"
+
+          exports="$(objdump -p build/kcsdr.dll | tr -d '\r')"
+          for sym in ktos_sdk_version ktos_open ktos_close ktos_identity ktos_error \
+                     ktos_rpc ktos_image_request ktos_iq_read ktos_iq_write ktos_iq_stop \
+                     kcsdr_init; do
+            echo "$exports" | grep -Eq "[[:space:]]${sym}$" || {
+              echo "Missing exported symbol: $sym" >&2
+              exit 1
+            }
+          done
+
+          imports="$(echo "$exports" | awk '/DLL Name:/ {print tolower($3)}')"
+          echo "Imported DLLs:"
+          echo "$imports"
+          while IFS= read -r dll; do
+            [[ -z "$dll" ]] && continue
+            case "$dll" in
+              kernel32.dll | msvcrt.dll) ;;
+              *)
+                echo "Unexpected runtime DLL dependency: $dll" >&2
+                exit 1
+                ;;
+            esac
+          done <<< "$imports"
+
+      - name: Verify version resource and package archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmake = Get-Content -LiteralPath 'CMakeLists.txt' -Raw
+          $m = [regex]::Match($cmake, 'VERSION\s+(\d+\.\d+\.\d+)')
+          if (-not $m.Success) { throw 'Failed to parse SDK version from CMakeLists.txt' }
+          $version = $m.Groups[1].Value
+
+          $dllPath = (Resolve-Path 'build/kcsdr.dll').Path
+          $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($dllPath)
+          if ($info.ProductVersion -ne $version -or
+              $info.FileVersion -ne "$version.0" -or
+              $info.CompanyName -ne 'Mfweb' -or
+              $info.LegalCopyright -ne 'Copyright (c) Mfweb' -or
+              $info.OriginalFilename -ne 'kcsdr.dll') {
+              throw "Unexpected VERSIONINFO on kcsdr.dll: Product=$($info.ProductVersion) File=$($info.FileVersion) Company=$($info.CompanyName)"
+          }
+
+          $pkgName = "kc908-sdk-$version-${{ matrix.arch }}"
+          $stage = Join-Path 'dist' $pkgName
+          New-Item -ItemType Directory -Path (Join-Path $stage 'include') -Force | Out-Null
+
+          # Ship only the production kcsdr.dll; never bundle fake test emulators or vendor FTD3XX.dll.
+          Copy-Item -LiteralPath 'build/kcsdr.dll' -Destination (Join-Path $stage 'kcsdr.dll')
+          Copy-Item -LiteralPath 'include/ktos_sdk.h' -Destination (Join-Path $stage 'include/ktos_sdk.h')
+          Copy-Item -LiteralPath 'include/image_protocol.h' -Destination (Join-Path $stage 'include/image_protocol.h')
+          Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $stage 'LICENSE')
+          Copy-Item -LiteralPath 'README.md' -Destination (Join-Path $stage 'README.md')
+          Copy-Item -LiteralPath 'README.zh-CN.md' -Destination (Join-Path $stage 'README.zh-CN.md')
+
+          $forbidden = Get-ChildItem -LiteralPath $stage -Recurse -File |
+              Where-Object { $_.Name -match 'FTD3XX|libusb' }
+          if ($forbidden) {
+              throw "Forbidden test/vendor binary found in package: $($forbidden.FullName -join ', ')"
+          }
+
+          $prefix = (Get-Item -LiteralPath $stage).FullName.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+          $sums = Get-ChildItem -LiteralPath $stage -Recurse -File |
+              Sort-Object { $_.FullName.Substring($prefix.Length).Replace('\', '/') } |
+              ForEach-Object {
+                  $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                  $rel = $_.FullName.Substring($prefix.Length).Replace('\', '/')
+                  "$hash  $rel"
+              }
+          [IO.File]::WriteAllText(
+              (Join-Path $stage 'SHA256SUMS.txt'),
+              ($sums -join "`n") + "`n",
+              [Text.UTF8Encoding]::new($false)
+          )
+
+          New-Item -ItemType Directory -Path 'artifacts' -Force | Out-Null
+          $archive = Join-Path 'artifacts' "$pkgName.zip"
+          Compress-Archive -Path $stage -DestinationPath $archive -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: kc908-sdk-${{ matrix.arch }}
+          path: artifacts/*.zip
+          if-no-files-found: error
+
+  build-linux:
+    name: Build (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: linux-x64
+            processor: x86_64
+            cc: gcc
+            nm: nm
+            cross_pkg: ""
+            emulator: ""
+            ld_prefix: ""
+            elf_machine: "Advanced Micro Devices X86-64"
+          - arch: linux-arm64
+            processor: aarch64
+            cc: aarch64-linux-gnu-gcc
+            nm: aarch64-linux-gnu-nm
+            cross_pkg: "gcc-aarch64-linux-gnu qemu-user"
+            emulator: "qemu-aarch64"
+            ld_prefix: "/usr/aarch64-linux-gnu"
+            elf_machine: "AArch64"
+          - arch: linux-armhf
+            processor: armv7l
+            cc: arm-linux-gnueabihf-gcc
+            nm: arm-linux-gnueabihf-nm
+            cross_pkg: "gcc-arm-linux-gnueabihf qemu-user"
+            emulator: "qemu-arm"
+            ld_prefix: "/usr/arm-linux-gnueabihf"
+            elf_machine: "ARM"
+          - arch: linux-x86
+            processor: i686
+            cc: i686-linux-gnu-gcc
+            nm: i686-linux-gnu-nm
+            cross_pkg: "gcc-i686-linux-gnu qemu-user"
+            emulator: "qemu-i386"
+            ld_prefix: "/usr/i686-linux-gnu"
+            elf_machine: "Intel 80386"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build pkg-config libusb-1.0-0-dev ${{ matrix.cross_pkg }}
+
+      - name: Configure, build, and run offline tests
+        run: |
+          set -euo pipefail
+          cmake_args=(
+            -S .
+            -B build
+            -G Ninja
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_C_COMPILER=${{ matrix.cc }}
+            -DPKG_CONFIG_EXECUTABLE=/usr/bin/pkg-config
+            -DBUILD_TESTING=ON
+          )
+          if [[ -n "${{ matrix.emulator }}" ]]; then
+            cmake_args+=(
+              -DCMAKE_SYSTEM_NAME=Linux
+              -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.processor }}
+              "-DCMAKE_CROSSCOMPILING_EMULATOR=${{ matrix.emulator }}"
+            )
+          fi
+
+          cmake "${cmake_args[@]}"
+          cmake --build build --parallel
+
+          if [[ -n "${{ matrix.ld_prefix }}" ]]; then
+            QEMU_LD_PREFIX="${{ matrix.ld_prefix }}" ctest --test-dir build --output-on-failure
+          else
+            ctest --test-dir build --output-on-failure
+          fi
+
+      - name: Verify ELF architecture, exports, and dynamic dependencies
+        run: |
+          set -euo pipefail
+          readelf -h build/libkcsdr.so | grep -F "${{ matrix.elf_machine }}"
+
+          for sym in ktos_sdk_version ktos_open ktos_close ktos_identity ktos_error \
+                     ktos_rpc ktos_image_request ktos_iq_read ktos_iq_write ktos_iq_stop \
+                     kcsdr_init; do
+            "${{ matrix.nm }}" -D --defined-only build/libkcsdr.so | grep -Eq "[[:space:]]${sym}$" || {
+              echo "Missing exported symbol: $sym" >&2
+              exit 1
+            }
+          done
+
+          if readelf -d build/libkcsdr.so | grep -i 'libusb'; then
+            echo "libkcsdr.so must load libusb-1.0 via dlopen, not DT_NEEDED" >&2
+            exit 1
+          fi
+
+      - name: Package archive
+        run: |
+          set -euo pipefail
+          version="$(grep -Eo 'VERSION[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | awk '{print $2}' | head -n1)"
+          [[ -n "$version" ]] || { echo "Failed to parse SDK version" >&2; exit 1; }
+
+          pkg_name="kc908-sdk-${version}-${{ matrix.arch }}"
+          stage="dist/${pkg_name}"
+          mkdir -p "${stage}/include" artifacts
+
+          # Ship only the production libkcsdr.so; never bundle fake test emulators.
+          cp -f build/libkcsdr.so "${stage}/libkcsdr.so"
+          cp -f resources/99-kc908-ft601.rules "${stage}/99-kc908-ft601.rules"
+          cp -f include/ktos_sdk.h "${stage}/include/ktos_sdk.h"
+          cp -f include/image_protocol.h "${stage}/include/image_protocol.h"
+          cp -f LICENSE README.md README.zh-CN.md "${stage}/"
+
+          if find "${stage}" -type f \( -iname '*libusb*' -o -iname '*FTD3XX*' \) | grep -q .; then
+            echo "Forbidden test/vendor binary found in package" >&2
+            exit 1
+          fi
+
+          (
+            cd "${stage}"
+            find . -type f ! -name 'SHA256SUMS.txt' | sed 's|^\./||' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS.txt
+          )
+
+          tar -C dist -czf "artifacts/${pkg_name}.tar.gz" "${pkg_name}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: kc908-sdk-${{ matrix.arch }}
+          path: artifacts/*.tar.gz
+          if-no-files-found: error
+
+  package:
+    name: Bundle all platforms
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: kc908-sdk-*
+          merge-multiple: true
+          path: release
+
+      - name: Verify archives and generate checksums
+        run: |
+          set -euo pipefail
+          cd release
+          shopt -s nullglob
+          archives=(*.zip *.tar.gz)
+          [[ "${#archives[@]}" -gt 0 ]] || { echo "No packaged archives found" >&2; exit 1; }
+
+          for archive in "${archives[@]}"; do
+            if [[ "$archive" == *.zip ]]; then
+              listing="$(unzip -Z1 "$archive")"
+            else
+              listing="$(tar -tzf "$archive")"
+            fi
+            if echo "$listing" | grep -Eiq 'FTD3XX|libusb'; then
+              echo "Forbidden test/vendor binary found in $archive" >&2
+              exit 1
+            fi
+          done
+
+          printf '%s\n' "${archives[@]}" | LC_ALL=C sort | xargs sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload combined bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: bundle-kc908-sdk
+          path: release/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download combined bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: bundle-kc908-sdk
+          path: release
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          files: release/*
