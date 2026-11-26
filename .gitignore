@@ -11,6 +11,8 @@ Makefile
 
 # Compiled binaries and objects
 *.dll
+*.so
+*.so.*
 *.exe
 *.lib
 *.a

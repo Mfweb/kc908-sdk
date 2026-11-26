@@ -2,12 +2,12 @@
  * Copyright (c) 2026 Mfweb
  * SPDX-License-Identifier: MIT
  *
- * Public C ABI for the KTOS KC908 host SDK (kcsdr.dll).
+ * Public C ABI for the KTOS KC908 host SDK (kcsdr.dll / libkcsdr.so).
  *
  * Conventions:
  *   - All functions return 0 on success or a negative error code on failure.
- *   - FTDI D3XX errors are encoded as (-1000 - FT_STATUS); protocol and device
- *     errors follow negative Linux errno values.
+ *   - Windows FTDI D3XX errors are encoded as (-1000 - FT_STATUS); Linux USB,
+ *     protocol, and device errors follow negative Linux errno values.
  *   - Device handles are exclusive. Callers must stop concurrent requests
  *     before calling ktos_close().
  */

@@ -1,6 +1,6 @@
-# KTOS Host SDK (`kcsdr.dll`)
+# KTOS Host SDK (`kcsdr.dll` / `libkcsdr.so`)
 
-Windows C shared library for communicating with the KC908 over USB 3.0 (FTDI FT601 / D3XX). It supports both the original KC908 USB3 IQ protocol and the KTOS custom firmware protocols (sequenced/CRC IQ streaming, JSON control RPC, and binary SD image/app transfers), while preserving binary compatibility with the Windows vendor `kcsdr.dll` 1.3.4 function table.
+Cross-platform C shared library (Windows and Linux) for communicating with the KC908 over USB 3.0 (FTDI FT601). It supports both the original KC908 USB3 IQ protocol and the KTOS custom firmware protocols (sequenced/CRC IQ streaming, JSON control RPC, and binary SD image/app transfers), while preserving binary compatibility with the Windows vendor `kcsdr.dll` 1.3.4 function table.
 
 [简体中文](README.zh-CN.md)
 
@@ -23,32 +23,47 @@ Windows C shared library for communicating with the KC908 over USB 3.0 (FTDI FT6
 │   ├── ktos_sdk.h           # Public C ABI header
 │   └── image_protocol.h     # Binary SD image / KCApp packet definitions
 ├── resources/
-│   └── version.rc.in        # Windows VERSIONINFO template
+│   ├── version.rc.in          # Windows VERSIONINFO template
+│   └── 99-kc908-ft601.rules   # Linux udev permissions rule for FT601 (0403:601f)
 ├── src/
-│   ├── internal.h           # Internal device state and D3XX bindings
-│   ├── sdk.c                # Lifecycle, negotiation, heartbeat, RPC
-│   ├── vsa_gps.c            # Typed C wrappers for VSA and software GPS L1
-│   ├── drm.c                # Typed C wrappers for DRM30 / DRM+ digital broadcast
-│   ├── transport_windows.c  # Windows FTDI D3XX transport & overlapped IQ
-│   ├── image.c              # High-level SHA-256 image upload/download
-│   ├── legacy.c             # Windows vendor 1.3.4 compatibility table
-│   ├── ktos_protocol.{h,c}  # Portable KTOS packet framing and CRC-32
-│   └── sha256.{h,c}         # Self-contained SHA-256 implementation
+│   ├── internal.h             # Internal device state and transport declarations
+│   ├── sdk.c                  # Lifecycle, negotiation, heartbeat, RPC
+│   ├── vsa_gps.c              # Typed C wrappers for VSA and software GPS L1
+│   ├── drm.c                  # Typed C wrappers for DRM30 / DRM+ digital broadcast
+│   ├── transport_windows.c    # Windows FTDI D3XX transport & overlapped IQ
+│   ├── transport_linux.c      # Linux libusb-1.0 FT601 transport & async IQ
+│   ├── image.c                # High-level SHA-256 image upload/download
+│   ├── legacy.c               # Windows vendor 1.3.4 compatibility table
+│   ├── ktos_protocol.{h,c}    # Portable KTOS packet framing and CRC-32
+│   └── sha256.{h,c}           # Self-contained SHA-256 implementation
 └── tests/
-    ├── fake_d3xx.c          # Offline FT601 emulator (test-only)
-    ├── test_sdk.c           # Protocol, IQ, RPC, image, and ABI tests
-    └── test_dynamic.c       # Dynamic load/unload and FLS error tests
+    ├── fake_d3xx.c            # Windows offline FT601 emulator (test-only)
+    ├── fake_libusb.c          # Linux offline FT601 libusb emulator (test-only)
+    ├── test_sdk.c             # Protocol, IQ, RPC, image, and ABI tests
+    └── test_dynamic.c         # Dynamic load/unload and per-thread error tests
 ```
 
 ## Runtime Requirements
 
+### Windows
 - Windows (x86 or x64)
 - FTDI D3XX driver installed
 - Official **`FTD3XX.dll` 1.3.0.4 or later** matching the host process architecture, placed next to `kcsdr.dll` (not bundled in this repository)
 
-> **Note:** `tests/FTD3XX.dll` built during unit testing is an offline emulator and must never be deployed with `kcsdr.dll`.
+### Linux
+- Linux (`x86_64`, `aarch64`, etc.) with **`libusb-1.0`** (`libusb-1.0-0`) installed — **no proprietary FTDI `libftd3xx` driver is required**
+- Install `resources/99-kc908-ft601.rules` into `/etc/udev/rules.d/` and reload udev so non-root users can open the FT601 USB3 device (`0403:601f`):
+  ```sh
+  sudo cp resources/99-kc908-ft601.rules /etc/udev/rules.d/
+  sudo udevadm control --reload-rules
+  sudo udevadm trigger
+  ```
+
+> **Note:** `tests/FTD3XX.dll` (Windows) and `tests/libusb-1.0.so.0` (Linux) built during unit testing are offline emulators and must never be deployed with `kcsdr.dll` / `libkcsdr.so`.
 
 ## Building and Testing
+
+### Windows
 
 Requires CMake (>= 3.16) and a MinGW-w64 GCC toolchain (supporting `-m64` / `-m32` and `windres`).
 
@@ -65,6 +80,19 @@ ctest --test-dir build-x64 --output-on-failure
 ```
 
 Replace `-m64` with `-m32` (and `build-x86`) to build the 32-bit DLL for legacy x86 applications.
+
+### Linux
+
+Requires CMake (>= 3.16), GCC or Clang, `pkg-config`, and `libusb-1.0` headers (e.g. `sudo apt install libusb-1.0-0-dev`).
+
+```sh
+# Configure and build libkcsdr.so with offline unit tests
+cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build-linux -j "$(nproc)"
+
+# Run offline unit tests (against tests/libusb-1.0.so.0 emulator)
+ctest --test-dir build-linux --output-on-failure
+```
 
 ## Quick Start (C)
 

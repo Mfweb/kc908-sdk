@@ -10,11 +10,15 @@
 
 #include <stdlib.h>
 
+static int sdk_ft(ktos_device *device, ULONG status, const char *operation) {
+    return status ? sdk_failure(device, -1000 - (int)status, operation) : 0;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Dynamic FTD3XX.dll loader                                                  */
 /* -------------------------------------------------------------------------- */
 
-int sdk_ft_load(ft_api *api) {
+static int sdk_ft_load(ft_api *api) {
     WCHAR   path[MAX_PATH];
     HMODULE self = NULL;
 
@@ -80,45 +84,47 @@ fail:
 /* -------------------------------------------------------------------------- */
 
 static void control_abort(ktos_device *device) {
-    device->api.abort(device->handle, PIPE_CTRL_IN);
-    if (device->control_pending) {
+    sdk_transport *t = &device->transport;
+    t->api.abort(t->handle, PIPE_CTRL_IN);
+    if (t->control_pending) {
         ULONG bytes  = 0;
-        ULONG status = device->api.complete(device->handle, &device->control_overlap, &bytes, TRUE);
+        ULONG status = t->api.complete(t->handle, &t->control_overlap, &bytes, TRUE);
         if (status != FT_IO_PENDING && status != FT_IO_INCOMPLETE) {
-            device->control_pending = 0;
+            t->control_pending = 0;
         }
     }
 }
 
-void sdk_control_release(ktos_device *device) {
-    if (device->control_pending) {
+static void control_release(ktos_device *device) {
+    sdk_transport *t = &device->transport;
+    if (t->control_pending) {
         control_abort(device);
     }
-    if (device->control_initialized && !device->control_pending) {
-        device->api.release(device->handle, &device->control_overlap);
-        device->control_initialized = 0;
+    if (t->control_initialized && !t->control_pending) {
+        t->api.release(t->handle, &t->control_overlap);
+        t->control_initialized = 0;
     }
 }
 
 static int control_submit(ktos_device *device, size_t offset) {
-    if (device->control_pending) {
+    sdk_transport *t = &device->transport;
+    if (t->control_pending) {
         return sdk_failure(device, -EBUSY, "control read still pending");
     }
-    if (!device->control_initialized) {
-        int error = sdk_ft(device, device->api.initialize(device->handle, &device->control_overlap),
+    if (!t->control_initialized) {
+        int error = sdk_ft(device, t->api.initialize(t->handle, &t->control_overlap),
                            "control initialize");
         if (error) {
             return error;
         }
-        device->control_initialized = 1;
+        t->control_initialized = 1;
     }
 
-    device->control_bytes = 0;
-    ULONG status = device->api.read(device->handle, PIPE_CTRL_IN, device->control_buffer + offset,
-                                    WIRE_IN_CHUNK, &device->control_bytes,
-                                    &device->control_overlap);
+    t->control_bytes = 0;
+    ULONG status     = t->api.read(t->handle, PIPE_CTRL_IN, t->control_buffer + offset,
+                                   WIRE_IN_CHUNK, &t->control_bytes, &t->control_overlap);
 
-    device->control_pending = (status == FT_IO_PENDING);
+    t->control_pending = (status == FT_IO_PENDING);
     if (status && status != FT_IO_PENDING) {
         control_abort(device);
         return sdk_ft(device, status, "control submit");
@@ -127,27 +133,112 @@ static int control_submit(ktos_device *device, size_t offset) {
 }
 
 static int control_complete(ktos_device *device, ULONG *actual) {
-    if (device->control_pending) {
-        ULONG status = device->api.complete(device->handle, &device->control_overlap,
-                                            &device->control_bytes, TRUE);
+    sdk_transport *t = &device->transport;
+    if (t->control_pending) {
+        ULONG status = t->api.complete(t->handle, &t->control_overlap, &t->control_bytes, TRUE);
         if (status != FT_IO_PENDING && status != FT_IO_INCOMPLETE) {
-            device->control_pending = 0;
+            t->control_pending = 0;
         }
         if (status) {
             control_abort(device);
             return sdk_ft(device, status, "control completion");
         }
     }
-    *actual = device->control_bytes;
+    *actual = t->control_bytes;
     return 0;
 }
 
 /* -------------------------------------------------------------------------- */
-/* Control wire framing and KTOS packet exchange                              */
+/* Transport lifecycle                                                        */
+/* -------------------------------------------------------------------------- */
+
+int sdk_transport_open(ktos_device *device, uint32_t index) {
+    sdk_transport *t = &device->transport;
+
+    int error = sdk_ft_load(&t->api);
+    if (error) {
+        return error;
+    }
+
+    ULONG count = 0;
+    error       = sdk_ft(device, t->api.list(&count), "enumerate FT601");
+    if (error || index >= count) {
+        if (!error) {
+            error = sdk_failure(device, -ENODEV, "FT601 device index is not enumerated");
+        }
+        return error;
+    }
+
+    void *handle = NULL;
+    error        = sdk_ft(device, t->api.create((void *)(uintptr_t)index, 0x10, &handle),
+                          "open FT601");
+    if (error) {
+        return error;
+    }
+    t->handle = handle;
+
+    USHORT vid = 0, pid = 0;
+    error = sdk_ft(device, t->api.vidpid(t->handle, &vid, &pid), "USB identity");
+    if (!error && (vid != FT601_VID || pid != FT601_PID)) {
+        error = sdk_failure(device, -ENODEV, "unexpected USB VID/PID");
+    }
+    if (error) {
+        return error;
+    }
+
+    const UCHAR pipes[4] = {PIPE_CTRL_OUT, PIPE_IQ_OUT, PIPE_CTRL_IN, PIPE_IQ_IN};
+    for (unsigned i = 0; i < 4; i++) {
+        ULONG timeout_ms = (pipes[i] == PIPE_IQ_IN) ? 500u : 3500u;
+        error            = sdk_ft(device, t->api.timeout(t->handle, pipes[i], timeout_ms),
+                                  "pipe timeout");
+        if (error) {
+            return error;
+        }
+    }
+    return 0;
+}
+
+int sdk_transport_is_open(const ktos_device *device) {
+    return device && device->transport.handle != NULL;
+}
+
+void sdk_transport_abort_rx(ktos_device *device) {
+    if (device && device->transport.handle) {
+        device->transport.api.abort(device->transport.handle, PIPE_IQ_IN);
+    }
+}
+
+void sdk_transport_close(ktos_device *device) {
+    sdk_transport *t = &device->transport;
+    if (t->handle) {
+        control_release(device);
+        t->api.close(t->handle);
+        t->handle = NULL;
+    }
+    /* Keep FTD3XX.dll resident: the Windows driver may still unwind aborted
+     * requests briefly after FT_Close(). The OS reclaims it at process exit. */
+}
+
+int sdk_transport_can_free(const ktos_device *device) {
+    const sdk_transport *t = &device->transport;
+    if (t->control_pending) {
+        return 0;
+    }
+    for (unsigned i = 0; i < IQ_SLOTS; i++) {
+        if (t->slots[i].pending) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Control wire framing                                                       */
 /* -------------------------------------------------------------------------- */
 
 int sdk_wire(ktos_device *device, uint32_t op, const void *data, size_t size, uint8_t *reply,
              size_t capacity, size_t *bytes) {
+    sdk_transport *t = &device->transport;
     if (size > 188 || (size && !data)) {
         return sdk_failure(device, -EINVAL, "command size");
     }
@@ -168,8 +259,7 @@ int sdk_wire(ktos_device *device, uint32_t op, const void *data, size_t size, ui
 
     ULONG actual = 0;
     error = sdk_ft(device,
-                   device->api.write(device->handle, PIPE_CTRL_OUT, packet, sizeof(packet), &actual,
-                                     NULL),
+                   t->api.write(t->handle, PIPE_CTRL_OUT, packet, sizeof(packet), &actual, NULL),
                    "control write");
     if (error || actual != sizeof(packet)) {
         if (reply) {
@@ -179,16 +269,16 @@ int sdk_wire(ktos_device *device, uint32_t op, const void *data, size_t size, ui
     }
 
     if (!reply) {
-        Sleep(5);
+        sdk_sleep_ms(5);
         return 0;
     }
 
-    uint8_t  *block       = device->control_buffer;
-    size_t    used        = 0;
-    uint32_t  expected_op = (op == 0x42u) ? 0x41u : op;
-    ULONGLONG deadline    = GetTickCount64() + 1500u;
+    uint8_t *block       = t->control_buffer;
+    size_t   used        = 0;
+    uint32_t expected_op = (op == 0x42u) ? 0x41u : op;
+    uint64_t deadline    = sdk_monotonic_ms() + 1500u;
 
-    while (GetTickCount64() < deadline) {
+    while (sdk_monotonic_ms() < deadline) {
         actual = 0;
         error  = control_complete(device, &actual);
         if (error) {
@@ -241,34 +331,15 @@ int sdk_wire(ktos_device *device, uint32_t op, const void *data, size_t size, ui
     return sdk_failure(device, -ETIMEDOUT, "control deadline");
 }
 
-int sdk_packet(ktos_device *device, const ktos_packet *request, uint8_t *buffer, size_t size,
-               ktos_packet *reply) {
-    uint8_t encoded[180];
-    size_t  written = 0;
-    size_t  count   = 0;
-
-    int error = ktos_packet_encode(encoded, sizeof(encoded), request, &written);
-    if (!error) {
-        error = sdk_wire(device, KTOS_USB_COMMAND, encoded, written, buffer, size, &count);
-    }
-    if (!error) {
-        error = ktos_packet_decode(reply, buffer, count);
-    }
-    if (!error && (reply->operation != request->operation || reply->id != request->id)) {
-        error = -EPROTO;
-    }
-
-    return error ? sdk_failure(device, error, "KTOS packet") : reply->status;
-}
-
 /* -------------------------------------------------------------------------- */
 /* Overlapped IQ RX streaming and synchronous IQ TX                           */
 /* -------------------------------------------------------------------------- */
 
 static int submit_iq_slot(ktos_device *device, iq_slot *slot) {
-    ULONG actual = 0;
-    ULONG status = device->api.read(device->handle, PIPE_IQ_IN, slot->data, IQ_CHUNK, &actual,
-                                    &slot->overlap);
+    sdk_transport *t      = &device->transport;
+    ULONG          actual = 0;
+    ULONG status = t->api.read(t->handle, PIPE_IQ_IN, slot->data, IQ_CHUNK, &actual,
+                               &slot->overlap);
     if (status && status != FT_IO_PENDING) {
         return sdk_ft(device, status, "IQ submit");
     }
@@ -280,22 +351,22 @@ static int submit_iq_slot(ktos_device *device, iq_slot *slot) {
 }
 
 void sdk_rx_release(ktos_device *device) {
-    unsigned allocated = device->streaming;
+    sdk_transport *t         = &device->transport;
+    unsigned       allocated = device->streaming;
     for (unsigned i = 0; i < IQ_SLOTS; i++) {
-        allocated |= device->slots[i].initialized || device->slots[i].data ||
-                     device->slots[i].pending;
+        allocated |= t->slots[i].initialized || t->slots[i].data || t->slots[i].pending;
     }
     if (!allocated) {
         return;
     }
 
-    device->api.abort(device->handle, PIPE_IQ_IN);
+    t->api.abort(t->handle, PIPE_IQ_IN);
 
     for (unsigned i = 0; i < IQ_SLOTS; i++) {
-        iq_slot *slot = &device->slots[i];
+        iq_slot *slot = &t->slots[i];
         if (slot->pending) {
             ULONG bytes  = 0;
-            ULONG status = device->api.complete(device->handle, &slot->overlap, &bytes, TRUE);
+            ULONG status = t->api.complete(t->handle, &slot->overlap, &bytes, TRUE);
             /* Never free a buffer still owned by an incomplete kernel request. */
             if (status == FT_IO_PENDING || status == FT_IO_INCOMPLETE) {
                 continue;
@@ -303,13 +374,13 @@ void sdk_rx_release(ktos_device *device) {
             slot->pending = 0;
         }
         if (slot->initialized) {
-            device->api.release(device->handle, &slot->overlap);
+            t->api.release(t->handle, &slot->overlap);
         }
         free(slot->data);
         memset(slot, 0, sizeof(*slot));
     }
 
-    device->api.clear(device->handle, FALSE, FALSE, PIPE_IQ_IN);
+    t->api.clear(t->handle, FALSE, FALSE, PIPE_IQ_IN);
     device->streaming = 0;
     device->slot      = 0;
 }
@@ -320,24 +391,24 @@ int KTOS_CALL ktos_iq_read(ktos_device *device, void *data, uint32_t bytes, uint
     }
 
     *actual = 0;
-    EnterCriticalSection(&device->rx);
+    sdk_mutex_lock(&device->rx);
 
-    int error = 0;
-    if (device->mode != KTOS_MODE_IQ || device->stopping) {
+    sdk_transport *t     = &device->transport;
+    int            error = 0;
+    if (device->mode != KTOS_MODE_IQ || sdk_atomic_load(&device->stopping)) {
         error = -EBUSY;
         goto done;
     }
 
     if (!device->streaming) {
-        error = sdk_ft(device, device->api.stream(device->handle, FALSE, FALSE, PIPE_IQ_IN,
-                                                  IQ_CHUNK),
+        error = sdk_ft(device, t->api.stream(t->handle, FALSE, FALSE, PIPE_IQ_IN, IQ_CHUNK),
                        "IQ stream");
         if (error) {
             goto done;
         }
 
         for (unsigned i = 0; i < IQ_SLOTS; i++) {
-            iq_slot *slot = &device->slots[i];
+            iq_slot *slot = &t->slots[i];
             if (slot->pending) {
                 error = -EBUSY;
                 goto done;
@@ -347,8 +418,7 @@ int KTOS_CALL ktos_iq_read(ktos_device *device, void *data, uint32_t bytes, uint
                 error = -ENOMEM;
                 goto done;
             }
-            error = sdk_ft(device, device->api.initialize(device->handle, &slot->overlap),
-                           "IQ initialize");
+            error = sdk_ft(device, t->api.initialize(t->handle, &slot->overlap), "IQ initialize");
             if (error) {
                 goto done;
             }
@@ -362,11 +432,11 @@ int KTOS_CALL ktos_iq_read(ktos_device *device, void *data, uint32_t bytes, uint
     }
 
     unsigned empty_transfers = 0;
-    while (*actual < bytes && !device->stopping) {
-        iq_slot *slot = &device->slots[device->slot];
+    while (*actual < bytes && !sdk_atomic_load(&device->stopping)) {
+        iq_slot *slot = &t->slots[device->slot];
         if (slot->pending) {
             error = sdk_ft(device,
-                           device->api.complete(device->handle, &slot->overlap, &slot->bytes, TRUE),
+                           t->api.complete(t->handle, &slot->overlap, &slot->bytes, TRUE),
                            "IQ completion");
             if (error) {
                 goto done;
@@ -414,7 +484,7 @@ done:
     if (error) {
         sdk_rx_release(device);
     }
-    LeaveCriticalSection(&device->rx);
+    sdk_mutex_unlock(&device->rx);
     return error;
 }
 
@@ -424,15 +494,16 @@ int KTOS_CALL ktos_iq_write(ktos_device *device, const void *data, uint32_t byte
         return -EINVAL;
     }
 
-    EnterCriticalSection(&device->tx);
-    ULONG count = 0;
-    int   error = (device->mode != KTOS_MODE_IQ)
-                      ? -EPERM
-                      : sdk_ft(device,
-                               device->api.write(device->handle, PIPE_IQ_OUT, (void *)data, bytes,
-                                                 &count, NULL),
-                               "IQ write");
-    *actual     = count;
-    LeaveCriticalSection(&device->tx);
+    sdk_mutex_lock(&device->tx);
+    sdk_transport *t     = &device->transport;
+    ULONG          count = 0;
+    int            error = (device->mode != KTOS_MODE_IQ)
+                               ? -EPERM
+                               : sdk_ft(device,
+                                        t->api.write(t->handle, PIPE_IQ_OUT, (void *)data, bytes,
+                                                     &count, NULL),
+                                        "IQ write");
+    *actual              = count;
+    sdk_mutex_unlock(&device->tx);
     return error;
 }

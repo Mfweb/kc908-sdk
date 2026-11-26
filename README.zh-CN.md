@@ -1,6 +1,6 @@
-# KTOS 主机 SDK（`kcsdr.dll`）
+# KTOS 主机 SDK（`kcsdr.dll` / `libkcsdr.so`）
 
-用于通过 USB 3.0（FTDI FT601 / D3XX）与 KC908 通信的 Windows C 动态库。支持原版 USB3 IQ 协议以及 KTOS 自制固件协议（带序号/CRC 的 IQ 流、UTF-8 JSON 控制 RPC、二进制 SD 图片/应用传输），同时保留与原版 Windows `kcsdr.dll` 1.3.4 函数表兼容的 ABI。
+用于通过 USB 3.0（FTDI FT601）与 KC908 通信的跨平台 C 动态库（支持 Windows 与 Linux）。支持原版 USB3 IQ 协议以及 KTOS 自制固件协议（带序号/CRC 的 IQ 流、UTF-8 JSON 控制 RPC、二进制 SD 图片/应用传输），同时保留与原版 Windows `kcsdr.dll` 1.3.4 函数表兼容的 ABI。
 
 [English](README.md)
 
@@ -23,32 +23,47 @@
 │   ├── ktos_sdk.h           # 公开 C ABI 头文件
 │   └── image_protocol.h     # 二进制 SD 图片/应用传输协议定义
 ├── resources/
-│   └── version.rc.in        # Windows 文件版本资源模板
+│   ├── version.rc.in          # Windows 文件版本资源模板
+│   └── 99-kc908-ft601.rules   # Linux FT601 (0403:601f) udev 权限规则
 ├── src/
-│   ├── internal.h           # 内部设备状态与 D3XX 函数表定义
-│   ├── sdk.c                # 设备生命周期、协议协商、保活与分片 RPC
-│   ├── vsa_gps.c            # 调制分析（VSA）与软件 GPS L1 C 封装接口
-│   ├── drm.c                # DRM30 / DRM+ 数字广播 C 封装接口
-│   ├── transport_windows.c  # Windows FTDI D3XX 传输与重叠 IQ 队列
-│   ├── image.c              # 带 SHA-256 校验的高层图片上传/下载接口
-│   ├── legacy.c             # Windows 原版 1.3.4 26 项函数表适配层
-│   ├── ktos_protocol.{h,c}  # 可移植 KTOS 协议编解码与 CRC-32
-│   └── sha256.{h,c}         # 独立 SHA-256 实现
+│   ├── internal.h             # 内部设备状态、同步原语与传输接口定义
+│   ├── sdk.c                  # 设备生命周期、协议协商、保活与分片 RPC
+│   ├── vsa_gps.c              # 调制分析（VSA）与软件 GPS L1 C 封装接口
+│   ├── drm.c                  # DRM30 / DRM+ 数字广播 C 封装接口
+│   ├── transport_windows.c    # Windows FTDI D3XX 传输与重叠 IQ 队列
+│   ├── transport_linux.c      # Linux libusb-1.0 FT601 传输与异步 IQ 队列
+│   ├── image.c                # 带 SHA-256 校验的高层图片上传/下载接口
+│   ├── legacy.c               # Windows 原版 1.3.4 26 项函数表适配层
+│   ├── ktos_protocol.{h,c}    # 可移植 KTOS 协议编解码与 CRC-32
+│   └── sha256.{h,c}           # 独立 SHA-256 实现
 └── tests/
-    ├── fake_d3xx.c          # 离线测试用 FT601 模拟器（严禁随发布包分发）
-    ├── test_sdk.c           # 协议协商、IQ 流、RPC、图片与旧 ABI 单测
-    └── test_dynamic.c       # 动态加载/卸载与线程隔离错误测试
+    ├── fake_d3xx.c            # Windows 离线测试用 FT601 模拟器（严禁随发布包分发）
+    ├── fake_libusb.c          # Linux 离线测试用 FT601 libusb 模拟器（严禁随发布包分发）
+    ├── test_sdk.c             # 协议协商、IQ 流、RPC、图片与旧 ABI 单测
+    └── test_dynamic.c         # 动态加载/卸载与线程隔离错误测试
 ```
 
 ## 运行依赖
 
+### Windows
 - Windows（x86 或 x64）
 - 已安装 FTDI D3XX 驱动
 - 与目标进程位数一致的官方 **`FTD3XX.dll` 1.3.0.4 或更新版本**，放置在 `kcsdr.dll` 同目录（本仓库不包含该厂商二进制）
 
-> **注意**：测试构建产生的 `tests/FTD3XX.dll` 仅为离线模拟器，切勿复制到实际部署目录。
+### Linux
+- Linux（`x86_64`、`aarch64` 等），安装系统 **`libusb-1.0`**（如 `libusb-1.0-0`），**无需**安装闭源 FTDI `libftd3xx` 驱动
+- 安装 udev 规则以允许普通用户访问 FT601（`0403:601f`）：
+  ```sh
+  sudo cp resources/99-kc908-ft601.rules /etc/udev/rules.d/
+  sudo udevadm control --reload-rules
+  sudo udevadm trigger
+  ```
+
+> **注意**：测试构建产生的 `tests/FTD3XX.dll`（Windows）与 `tests/libusb-1.0.so.0`（Linux）仅为离线模拟器，切勿复制到实际部署目录。
 
 ## 编译与测试
+
+### Windows
 
 需要 CMake（>= 3.16）以及支持 `-m32`/`-m64` 和 `windres` 的 MinGW-w64 GCC 工具链。
 
@@ -66,11 +81,24 @@ ctest --test-dir build-x64 --output-on-failure
 
 如需编译 32 位版本供旧版 x86 上位机使用，将 `-m64` 替换为 `-m32`（并使用独立构建目录 `build-x86`）即可。
 
+### Linux
+
+需要 CMake（>= 3.16）、GCC/Clang、`pkg-config` 及 `libusb-1.0` 开发包（如 `sudo apt install libusb-1.0-0-dev`）。
+
+```sh
+# 配置并编译 libkcsdr.so 及单元测试
+cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build-linux -j "$(nproc)"
+
+# 运行离线单元测试（自动加载 tests/libusb-1.0.so.0 模拟器）
+ctest --test-dir build-linux --output-on-failure
+```
+
 ## 错误码说明
 
 - 返回 `0` 表示成功，负数表示失败。
-- FTDI D3XX 错误编码为 `-1000 - FT_STATUS`。
-- 设备与协议错误沿用 Linux 负 `errno` 编码。
+- Windows FTDI D3XX 错误编码为 `-1000 - FT_STATUS`。
+- Linux USB 传输错误及设备/协议错误均沿用 Linux 负 `errno` 编码（如权限不足返回 `-EACCES`）。
 - `ktos_open()` 失败后可调用 `ktos_error(NULL, buf, cap)` 读取当前线程最近的错误说明。
 
 ## 许可证

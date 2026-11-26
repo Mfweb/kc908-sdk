@@ -27,13 +27,15 @@
 #define LINUX_EINPROGRESS (-115)
 
 /* -------------------------------------------------------------------------- */
-/* Thread-local open-failure storage (Fiber Local Storage)                    */
+/* Thread-local open-failure storage                                          */
 /* -------------------------------------------------------------------------- */
 
 typedef struct {
     int  code;
     char message[256];
 } open_failure;
+
+#ifdef _WIN32
 
 static DWORD failure_slot = FLS_OUT_OF_INDEXES;
 
@@ -55,7 +57,14 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) {
     return TRUE;
 }
 
+static open_failure *get_open_failure(void) {
+    return (failure_slot != FLS_OUT_OF_INDEXES) ? FlsGetValue(failure_slot) : NULL;
+}
+
 static void set_open_failure(int code, const char *message) {
+    if (failure_slot == FLS_OUT_OF_INDEXES) {
+        return;
+    }
     open_failure *failure = FlsGetValue(failure_slot);
     if (!failure) {
         failure = calloc(1, sizeof(*failure));
@@ -71,22 +80,66 @@ static void set_open_failure(int code, const char *message) {
     snprintf(failure->message, sizeof(failure->message), "%s", message);
 }
 
+#else /* POSIX pthread key */
+
+static pthread_key_t failure_key;
+static int           failure_key_ready;
+
+__attribute__((constructor)) static void sdk_library_init(void) {
+    if (pthread_key_create(&failure_key, free) == 0) {
+        failure_key_ready = 1;
+    }
+}
+
+__attribute__((destructor)) static void sdk_library_fini(void) {
+    if (failure_key_ready) {
+        void *current = pthread_getspecific(failure_key);
+        if (current) {
+            pthread_setspecific(failure_key, NULL);
+            free(current);
+        }
+        pthread_key_delete(failure_key);
+        failure_key_ready = 0;
+    }
+}
+
+static open_failure *get_open_failure(void) {
+    return failure_key_ready ? (open_failure *)pthread_getspecific(failure_key) : NULL;
+}
+
+static void set_open_failure(int code, const char *message) {
+    if (!failure_key_ready) {
+        return;
+    }
+    open_failure *failure = pthread_getspecific(failure_key);
+    if (!failure) {
+        failure = calloc(1, sizeof(*failure));
+        if (!failure) {
+            return;
+        }
+        if (pthread_setspecific(failure_key, failure) != 0) {
+            free(failure);
+            return;
+        }
+    }
+    failure->code = code;
+    snprintf(failure->message, sizeof(failure->message), "%s", message);
+}
+
+#endif
+
 /* -------------------------------------------------------------------------- */
-/* Error reporting and helpers                                                */
+/* Error reporting and packet exchange helpers                                */
 /* -------------------------------------------------------------------------- */
 
 int sdk_failure(ktos_device *device, int error, const char *operation) {
     if (device) {
-        EnterCriticalSection(&device->errors);
+        sdk_mutex_lock(&device->errors);
         device->error = error;
         snprintf(device->message, sizeof(device->message), "%s: error %d", operation, error);
-        LeaveCriticalSection(&device->errors);
+        sdk_mutex_unlock(&device->errors);
     }
     return error;
-}
-
-int sdk_ft(ktos_device *device, ULONG status, const char *operation) {
-    return status ? sdk_failure(device, -1000 - (int)status, operation) : 0;
 }
 
 uint32_t KTOS_CALL ktos_sdk_version(void) {
@@ -100,46 +153,178 @@ static uint32_t next_transaction_id(ktos_device *device) {
     return device->next_id;
 }
 
+int sdk_packet(ktos_device *device, const ktos_packet *request, uint8_t *buffer, size_t size,
+               ktos_packet *reply) {
+    uint8_t encoded[180];
+    size_t  written = 0;
+    size_t  count   = 0;
+
+    int error = ktos_packet_encode(encoded, sizeof(encoded), request, &written);
+    if (!error) {
+        error = sdk_wire(device, KTOS_USB_COMMAND, encoded, written, buffer, size, &count);
+    }
+    if (!error) {
+        error = ktos_packet_decode(reply, buffer, count);
+    }
+    if (!error && (reply->operation != request->operation || reply->id != request->id)) {
+        error = -EPROTO;
+    }
+
+    return error ? sdk_failure(device, error, "KTOS packet") : reply->status;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Keepalive heartbeat thread (KTOS backend only)                             */
 /* -------------------------------------------------------------------------- */
 
+static void heartbeat_tick(ktos_device *device) {
+    /* Skip this tick if a foreground control call already holds the link. */
+    if (!sdk_mutex_trylock(&device->control)) {
+        return;
+    }
+
+    ktos_packet request = {
+        .operation = KTOS_PING,
+        .id        = next_transaction_id(device),
+    };
+    int error;
+
+    if (device->capabilities & KTOS_CAP_KEEPALIVE) {
+        /* One-way keepalive avoids stalling high-rate IQ transfers with IN replies. */
+        uint8_t packet[KTOS_HEADER_BYTES];
+        size_t  bytes = 0;
+        error         = ktos_packet_encode(packet, sizeof(packet), &request, &bytes);
+        if (!error) {
+            error = sdk_wire(device, KTOS_USB_KEEPALIVE, packet, bytes, NULL, 0, NULL);
+        }
+    } else {
+        uint8_t     buffer[256];
+        ktos_packet reply;
+        error = sdk_packet(device, &request, buffer, sizeof(buffer), &reply);
+    }
+
+    if (error) {
+        sdk_failure(device, error, "keepalive");
+    }
+    sdk_mutex_unlock(&device->control);
+}
+
+#ifdef _WIN32
+
 static DWORD WINAPI heartbeat_thread(void *context) {
     ktos_device *device = context;
 
-    while (WaitForSingleObject(device->stop_event, HEARTBEAT_MS) == WAIT_TIMEOUT) {
-        /* Skip this tick if a foreground control call already holds the link. */
-        if (!TryEnterCriticalSection(&device->control)) {
-            continue;
-        }
-
-        ktos_packet request = {
-            .operation = KTOS_PING,
-            .id        = next_transaction_id(device),
-        };
-        int error;
-
-        if (device->capabilities & KTOS_CAP_KEEPALIVE) {
-            /* One-way keepalive avoids stalling high-rate IQ transfers with IN replies. */
-            uint8_t packet[KTOS_HEADER_BYTES];
-            size_t  bytes = 0;
-            error         = ktos_packet_encode(packet, sizeof(packet), &request, &bytes);
-            if (!error) {
-                error = sdk_wire(device, KTOS_USB_KEEPALIVE, packet, bytes, NULL, 0, NULL);
-            }
-        } else {
-            uint8_t     buffer[256];
-            ktos_packet reply;
-            error = sdk_packet(device, &request, buffer, sizeof(buffer), &reply);
-        }
-
-        if (error) {
-            sdk_failure(device, error, "keepalive");
-        }
-        LeaveCriticalSection(&device->control);
+    while (WaitForSingleObject(device->heartbeat.stop_event, HEARTBEAT_MS) == WAIT_TIMEOUT) {
+        heartbeat_tick(device);
     }
     return 0;
 }
+
+static int heartbeat_start(ktos_device *device) {
+    device->heartbeat.stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!device->heartbeat.stop_event) {
+        return -ENOMEM;
+    }
+    device->heartbeat.thread = CreateThread(NULL, 0, heartbeat_thread, device, 0, NULL);
+    if (!device->heartbeat.thread) {
+        return -ENOMEM;
+    }
+    return 0;
+}
+
+static void heartbeat_stop(ktos_device *device) {
+    if (device->heartbeat.stop_event) {
+        SetEvent(device->heartbeat.stop_event);
+    }
+    if (device->heartbeat.thread) {
+        WaitForSingleObject(device->heartbeat.thread, INFINITE);
+        CloseHandle(device->heartbeat.thread);
+        device->heartbeat.thread = NULL;
+    }
+    if (device->heartbeat.stop_event) {
+        CloseHandle(device->heartbeat.stop_event);
+        device->heartbeat.stop_event = NULL;
+    }
+}
+
+#else /* POSIX pthread heartbeat */
+
+static void *heartbeat_thread(void *context) {
+    ktos_device *device = context;
+
+    for (;;) {
+        struct timespec until;
+        clock_gettime(CLOCK_MONOTONIC, &until);
+        until.tv_nsec += (long)HEARTBEAT_MS * 1000000L;
+        if (until.tv_nsec >= 1000000000L) {
+            until.tv_sec += until.tv_nsec / 1000000000L;
+            until.tv_nsec %= 1000000000L;
+        }
+
+        pthread_mutex_lock(&device->heartbeat.mutex);
+        while (!device->heartbeat.stop) {
+            int rc = pthread_cond_timedwait(&device->heartbeat.cond, &device->heartbeat.mutex,
+                                            &until);
+            if (rc == ETIMEDOUT) {
+                break;
+            }
+        }
+        int should_stop = device->heartbeat.stop;
+        pthread_mutex_unlock(&device->heartbeat.mutex);
+
+        if (should_stop) {
+            break;
+        }
+        heartbeat_tick(device);
+    }
+    return NULL;
+}
+
+static int heartbeat_start(ktos_device *device) {
+    pthread_condattr_t attr;
+    if (pthread_mutex_init(&device->heartbeat.mutex, NULL) != 0) {
+        return -ENOMEM;
+    }
+    if (pthread_condattr_init(&attr) != 0) {
+        pthread_mutex_destroy(&device->heartbeat.mutex);
+        return -ENOMEM;
+    }
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    int rc = pthread_cond_init(&device->heartbeat.cond, &attr);
+    pthread_condattr_destroy(&attr);
+    if (rc != 0) {
+        pthread_mutex_destroy(&device->heartbeat.mutex);
+        return -ENOMEM;
+    }
+    device->heartbeat.initialized = 1;
+    device->heartbeat.stop        = 0;
+
+    if (pthread_create(&device->heartbeat.thread, NULL, heartbeat_thread, device) != 0) {
+        return -ENOMEM;
+    }
+    device->heartbeat.started = 1;
+    return 0;
+}
+
+static void heartbeat_stop(ktos_device *device) {
+    if (!device->heartbeat.initialized) {
+        return;
+    }
+    if (device->heartbeat.started) {
+        pthread_mutex_lock(&device->heartbeat.mutex);
+        device->heartbeat.stop = 1;
+        pthread_cond_signal(&device->heartbeat.cond);
+        pthread_mutex_unlock(&device->heartbeat.mutex);
+
+        pthread_join(device->heartbeat.thread, NULL);
+        device->heartbeat.started = 0;
+    }
+    pthread_cond_destroy(&device->heartbeat.cond);
+    pthread_mutex_destroy(&device->heartbeat.mutex);
+    device->heartbeat.initialized = 0;
+}
+
+#endif
 
 /* -------------------------------------------------------------------------- */
 /* Device open, identity, and diagnostics                                     */
@@ -156,50 +341,25 @@ int KTOS_CALL ktos_open(uint32_t index, ktos_device **out) {
         return -ENOMEM;
     }
 
-    InitializeCriticalSection(&device->control);
-    InitializeCriticalSection(&device->rx);
-    InitializeCriticalSection(&device->tx);
-    InitializeCriticalSection(&device->errors);
-
-    int error = sdk_ft_load(&device->api);
-    if (error) {
-        goto fail;
+    int error = sdk_mutex_init(&device->control);
+    if (!error) {
+        error = sdk_mutex_init(&device->rx);
     }
-
-    ULONG count = 0;
-    error       = sdk_ft(device, device->api.list(&count), "enumerate FT601");
-    if (error || index >= count) {
-        if (!error) {
-            error = sdk_failure(device, -ENODEV, "FT601 device index is not enumerated");
-        }
-        goto fail;
+    if (!error) {
+        error = sdk_mutex_init(&device->tx);
     }
-
-    void *handle = NULL;
-    error = sdk_ft(device, device->api.create((void *)(uintptr_t)index, 0x10, &handle),
-                   "open FT601");
-    if (error) {
-        goto fail;
-    }
-    device->handle = handle;
-
-    USHORT vid = 0, pid = 0;
-    error = sdk_ft(device, device->api.vidpid(device->handle, &vid, &pid), "USB identity");
-    if (!error && (vid != FT601_VID || pid != FT601_PID)) {
-        error = sdk_failure(device, -ENODEV, "unexpected USB VID/PID");
+    if (!error) {
+        error = sdk_mutex_init(&device->errors);
     }
     if (error) {
-        goto fail;
+        free(device);
+        return error;
     }
+    device->mutexes_initialized = 1;
 
-    const UCHAR pipes[4] = {PIPE_CTRL_OUT, PIPE_IQ_OUT, PIPE_CTRL_IN, PIPE_IQ_IN};
-    for (unsigned i = 0; i < 4; i++) {
-        ULONG timeout_ms = (pipes[i] == PIPE_IQ_IN) ? 500u : 3500u;
-        error = sdk_ft(device, device->api.timeout(device->handle, pipes[i], timeout_ms),
-                       "pipe timeout");
-        if (error) {
-            goto fail;
-        }
+    error = sdk_transport_open(device, index);
+    if (error) {
+        goto fail;
     }
 
     /* Probe device capabilities to detect original firmware vs. KTOS backend. */
@@ -248,14 +408,8 @@ int KTOS_CALL ktos_open(uint32_t index, ktos_device **out) {
     }
 
     if (device->backend == KTOS_BACKEND_CUSTOM) {
-        device->stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-        if (!device->stop_event) {
-            error = -ENOMEM;
-            goto fail;
-        }
-        device->heartbeat = CreateThread(NULL, 0, heartbeat_thread, device, 0, NULL);
-        if (!device->heartbeat) {
-            error = -ENOMEM;
+        error = heartbeat_start(device);
+        if (error) {
             goto fail;
         }
     }
@@ -264,9 +418,16 @@ int KTOS_CALL ktos_open(uint32_t index, ktos_device **out) {
     return 0;
 
 fail:
-    set_open_failure(error, device->message[0]
-                                ? device->message
-                                : "load FTD3XX.dll 1.3.0.4 or later and check USB3 connection");
+    set_open_failure(
+        error,
+        device->message[0]
+            ? device->message
+#ifdef _WIN32
+            : "load FTD3XX.dll 1.3.0.4 or later and check USB3 connection"
+#else
+            : "check libusb-1.0, USB3 connection, and udev permissions for FT601 (0403:601f)"
+#endif
+    );
     ktos_close(device);
     return error;
 }
@@ -293,15 +454,15 @@ int KTOS_CALL ktos_error(ktos_device *device, char *text, uint32_t capacity) {
     }
 
     if (!device) {
-        open_failure *failure = FlsGetValue(failure_slot);
+        open_failure *failure = get_open_failure();
         snprintf(text, capacity, "%s", failure ? failure->message : "");
         return failure ? failure->code : 0;
     }
 
-    EnterCriticalSection(&device->errors);
+    sdk_mutex_lock(&device->errors);
     snprintf(text, capacity, "%s", device->message);
     int error = device->error;
-    LeaveCriticalSection(&device->errors);
+    sdk_mutex_unlock(&device->errors);
     return error;
 }
 
@@ -318,7 +479,7 @@ int KTOS_CALL ktos_iq_command(ktos_device *device, uint32_t opcode, const void *
         return sdk_failure(device, -EPERM, "select IQ mode on device");
     }
 
-    EnterCriticalSection(&device->control);
+    sdk_mutex_lock(&device->control);
     int error;
 
     if (device->backend == KTOS_BACKEND_ORIGINAL) {
@@ -343,10 +504,10 @@ int KTOS_CALL ktos_iq_command(ktos_device *device, uint32_t opcode, const void *
     }
 
     if (!error && (opcode == OP_IQ_RX_START || opcode == OP_IQ_TX_START)) {
-        InterlockedExchange(&device->stopping, 0);
+        sdk_atomic_store(&device->stopping, 0);
     }
 
-    LeaveCriticalSection(&device->control);
+    sdk_mutex_unlock(&device->control);
     return error ? sdk_failure(device, error, "IQ command") : 0;
 }
 
@@ -367,7 +528,7 @@ static int send_fragmented_request(ktos_device *device, const void *payload, siz
         return sdk_failure(device, -EPERM, "select KTOS MCP mode on device");
     }
 
-    EnterCriticalSection(&device->control);
+    sdk_mutex_lock(&device->control);
 
     uint8_t     buffer[4096];
     ktos_packet reply;
@@ -401,12 +562,12 @@ static int send_fragmented_request(ktos_device *device, const void *payload, siz
         error = sdk_packet(device, &request, buffer, sizeof(buffer), &reply);
     }
 
-    ULONGLONG deadline = GetTickCount64() + timeout_ms;
-    request.operation  = KTOS_READ;
-    uint32_t total     = 0;
+    uint64_t deadline = sdk_monotonic_ms() + timeout_ms;
+    request.operation = KTOS_READ;
+    uint32_t total    = 0;
 
     while (!error) {
-        if (GetTickCount64() > deadline) {
+        if (sdk_monotonic_ms() > deadline) {
             error = -ETIMEDOUT;
             break;
         }
@@ -414,7 +575,7 @@ static int send_fragmented_request(ktos_device *device, const void *payload, siz
         error = sdk_packet(device, &request, buffer, sizeof(buffer), &reply);
         if (error == LINUX_EINPROGRESS) {
             error = 0;
-            Sleep(5);
+            sdk_sleep_ms(5);
             continue;
         }
         if (error) {
@@ -451,7 +612,7 @@ static int send_fragmented_request(ktos_device *device, const void *payload, siz
     if (error) {
         sdk_failure(device, error, "agent RPC");
     }
-    LeaveCriticalSection(&device->control);
+    sdk_mutex_unlock(&device->control);
     return error;
 }
 
@@ -495,21 +656,21 @@ int KTOS_CALL ktos_image_request(ktos_device *device, const void *request, uint3
 /* -------------------------------------------------------------------------- */
 
 int KTOS_CALL ktos_iq_stop(ktos_device *device) {
-    if (!device || !device->handle) {
+    if (!device || !sdk_transport_is_open(device)) {
         return -EINVAL;
     }
 
-    InterlockedExchange(&device->stopping, 1);
+    sdk_atomic_store(&device->stopping, 1);
     if (device->streaming) {
-        device->api.abort(device->handle, PIPE_IQ_IN);
+        sdk_transport_abort_rx(device);
     }
 
     int rx_error = ktos_iq_command(device, OP_IQ_RX_STOP, NULL, 0);
     int tx_error = ktos_iq_command(device, OP_IQ_TX_STOP, NULL, 0);
 
-    EnterCriticalSection(&device->rx);
+    sdk_mutex_lock(&device->rx);
     sdk_rx_release(device);
-    LeaveCriticalSection(&device->rx);
+    sdk_mutex_unlock(&device->rx);
 
     return rx_error ? rx_error : tx_error;
 }
@@ -519,18 +680,9 @@ void KTOS_CALL ktos_close(ktos_device *device) {
         return;
     }
 
-    if (device->stop_event) {
-        SetEvent(device->stop_event);
-    }
-    if (device->heartbeat) {
-        WaitForSingleObject(device->heartbeat, INFINITE);
-        CloseHandle(device->heartbeat);
-    }
-    if (device->stop_event) {
-        CloseHandle(device->stop_event);
-    }
+    heartbeat_stop(device);
 
-    if (device->handle) {
+    if (sdk_transport_is_open(device)) {
         if (device->mode == KTOS_MODE_IQ) {
             ktos_iq_stop(device);
             ktos_iq_command(device, OP_IQ_CLOSE, NULL, 0);
@@ -539,26 +691,22 @@ void KTOS_CALL ktos_close(ktos_device *device) {
             uint32_t needed = 0;
             ktos_rpc(device, "action stop", reply, sizeof(reply), &needed);
         }
-        sdk_control_release(device);
-        device->api.close(device->handle);
     }
 
-    /* Keep FTD3XX.dll resident: the Windows driver may still unwind aborted
-     * requests briefly after FT_Close(). The OS reclaims it at process exit. */
-    DeleteCriticalSection(&device->control);
-    DeleteCriticalSection(&device->rx);
-    DeleteCriticalSection(&device->tx);
-    DeleteCriticalSection(&device->errors);
+    sdk_transport_close(device);
+
+    if (device->mutexes_initialized) {
+        sdk_mutex_destroy(&device->control);
+        sdk_mutex_destroy(&device->rx);
+        sdk_mutex_destroy(&device->tx);
+        sdk_mutex_destroy(&device->errors);
+        device->mutexes_initialized = 0;
+    }
 
     /* Never free the device struct if a kernel I/O request still references an
-     * embedded OVERLAPPED or buffer. */
-    if (device->control_pending) {
+     * embedded overlapped structure or transfer buffer. */
+    if (!sdk_transport_can_free(device)) {
         return;
-    }
-    for (unsigned i = 0; i < IQ_SLOTS; i++) {
-        if (device->slots[i].pending) {
-            return;
-        }
     }
 
     free(device);

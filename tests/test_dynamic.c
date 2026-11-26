@@ -2,16 +2,19 @@
  * Copyright (c) 2026 Mfweb
  * SPDX-License-Identifier: MIT
  *
- * Verifies dynamic LoadLibrary/FreeLibrary cycles with preexisting worker
- * threads and isolated per-thread open-failure reporting (FLS).
+ * Verifies dynamic library load/unload cycles with preexisting worker threads
+ * and isolated per-thread open-failure reporting (FLS on Windows, pthread key
+ * on Linux).
  */
-
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
 
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+
+#ifdef _WIN32
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 typedef int(__cdecl *open_fn)(uint32_t, void **);
 typedef int(__cdecl *error_fn)(void *, char *, uint32_t);
@@ -60,3 +63,69 @@ int main(void) {
     puts("Dynamic SDK load, preexisting thread, isolated errors and unload PASS");
     return 0;
 }
+
+#else /* Linux / POSIX */
+
+#include <dlfcn.h>
+#include <pthread.h>
+
+typedef int (*open_fn)(uint32_t, void **);
+typedef int (*error_fn)(void *, char *, uint32_t);
+
+static open_fn         open_device;
+static error_fn        last_error;
+static pthread_mutex_t ready_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  ready_cond = PTHREAD_COND_INITIALIZER;
+static int             is_ready;
+
+static void *worker_thread(void *context) {
+    (void)context;
+    pthread_mutex_lock(&ready_lock);
+    while (!is_ready) {
+        pthread_cond_wait(&ready_cond, &ready_lock);
+    }
+    pthread_mutex_unlock(&ready_lock);
+
+    char message[512];
+    assert(last_error(NULL, message, sizeof(message)) == 0 && !message[0]);
+
+    void *device = (void *)1;
+    int   error  = open_device(1000, &device);
+    assert(error < 0 && !device);
+    assert(last_error(NULL, message, sizeof(message)) == error && message[0]);
+    return NULL;
+}
+
+int main(void) {
+    for (unsigned i = 0; i < 4; ++i) {
+        pthread_mutex_lock(&ready_lock);
+        is_ready = 0;
+        pthread_mutex_unlock(&ready_lock);
+
+        pthread_t thread;
+        assert(pthread_create(&thread, NULL, worker_thread, NULL) == 0);
+
+        void *library = dlopen("./libkcsdr.so", RTLD_NOW | RTLD_LOCAL);
+        assert(library);
+        *(void **)&open_device = dlsym(library, "ktos_open");
+        *(void **)&last_error  = dlsym(library, "ktos_error");
+        assert(open_device && last_error);
+
+        pthread_mutex_lock(&ready_lock);
+        is_ready = 1;
+        pthread_cond_signal(&ready_cond);
+        pthread_mutex_unlock(&ready_lock);
+
+        assert(pthread_join(thread, NULL) == 0);
+
+        char message[512];
+        assert(last_error(NULL, message, sizeof(message)) == 0 && !message[0]);
+
+        assert(dlclose(library) == 0);
+    }
+
+    puts("Dynamic SDK load, preexisting thread, isolated errors and unload PASS");
+    return 0;
+}
+
+#endif

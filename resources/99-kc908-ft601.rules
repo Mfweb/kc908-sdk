@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Mfweb
+# SPDX-License-Identifier: MIT
+#
+# Grant non-root users USB access to the KC908 USB 3.0 FTDI FT601 interface
+# (VID 0403 / PID 601F).
+#
+# Install:
+#   sudo cp 99-kc908-ft601.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#
+# To restrict access to a dedicated group instead of all local users, replace
+# MODE="0666" with GROUP="plugdev", MODE="0660".
+SUBSYSTEM=="usb", ATTR{idVendor}=="0403", ATTR{idProduct}=="601f", MODE="0666", TAG+="uaccess"
