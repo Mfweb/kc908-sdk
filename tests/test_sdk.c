@@ -51,7 +51,7 @@ static void sleep_ms(unsigned ms) {
 #endif
 
 int main(void) {
-    assert(ktos_sdk_version() == 0x00010005);
+    assert(ktos_sdk_version() == 0x00010006);
 
     /* Open failure diagnostics via thread-local storage. */
     for (unsigned kind = 1; kind <= 2; kind++) {
@@ -75,7 +75,7 @@ int main(void) {
 
         char info[512];
         assert(ktos_identity(device, info, sizeof(info)) == 0);
-        assert(strstr(info, "\"sdk\":\"1.0.5\""));
+        assert(strstr(info, "\"sdk\":\"1.0.6\""));
         assert(strstr(info, mode ? "\"backend\":\"KTOS\"" : "\"backend\":\"original\""));
 
         if (mode > 0) {
