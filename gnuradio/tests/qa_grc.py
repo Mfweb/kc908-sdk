@@ -30,10 +30,13 @@ def main():
     for kind in ("source", "sink"):
         graph = platform.make_flow_graph()
         name = "kc908_grc_" + kind
-        graph.options_block.params["id"].set_value(name)
         # These blocks generate Python; do not inherit GRC's output language default.
         graph.options_block.params["output_language"].set_value("python")
+        graph.rewrite()
         graph.options_block.params["generate_options"].set_value("no_gui")
+        graph.rewrite()
+        # Workflow changes can rebuild the options parameters. Set the ID afterward.
+        graph.options_block.params["id"].set_value(name)
         graph.grc_file_path = str(output / (name + ".grc"))
 
         def add(block_id, label):
