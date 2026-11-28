@@ -185,3 +185,17 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
     )
 endif()
+
+# ------------------------------------------------------------------------------
+# Optional GNU Radio 3.10 Python blocks (installed as the top-level kc908 package)
+# ------------------------------------------------------------------------------
+
+option(
+    KTOS_ENABLE_GNURADIO
+    "Build/install the KC908 GNU Radio 3.10 Python blocks"
+    ON
+)
+
+if(KTOS_ENABLE_GNURADIO)
+    add_subdirectory(gnuradio)
+endif()

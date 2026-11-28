@@ -12,6 +12,7 @@ Cross-platform C shared library (Windows and Linux) for communicating with the K
 - **High-throughput IQ streaming**: Uses four 1 MiB overlapped RX slots on FT601 while letting callers consume arbitrary 4-byte-aligned blocks.
 - **Control RPC & binary transfer**: Fragmented, CRC-32-checked UTF-8 JSON RPC (`ktos_rpc`), typed VSA, software GPS L1, and DRM30/DRM+ helpers (`ktos_vsa_*`, `ktos_gps_*`, `ktos_drm_*`), and SHA-256-verified SD image upload/download (`ktos_image_upload`, `ktos_image_download`, `ktos_image_request`).
 - **Legacy ABI compatibility**: Exports `kcsdr_init()` with the exact 26-slot Windows 1.3.4 function table for existing desktop SDR software.
+- **GNU Radio 3.10**: Python complex64 IQ Source/Sink blocks and GNU Radio Companion definitions enabled by default, using the public C ABI on Windows and Linux.
 
 ## Repository Layout
 
@@ -65,7 +66,7 @@ Cross-platform C shared library (Windows and Linux) for communicating with the K
 
 ### Windows
 
-Requires CMake (>= 3.16) and a MinGW-w64 GCC toolchain (supporting `-m64` / `-m32` and `windres`).
+Requires CMake (>= 3.16), a MinGW-w64 GCC toolchain (supporting `-m64` / `-m32` and `windres`), and GNU Radio 3.10 with NumPy in the selected Python environment. For a C SDK-only build, pass `-DKTOS_ENABLE_GNURADIO=OFF`.
 
 ```powershell
 # Configure and build 64-bit kcsdr.dll with tests
@@ -83,7 +84,7 @@ Replace `-m64` with `-m32` (and `build-x86`) to build the 32-bit DLL for legacy 
 
 ### Linux
 
-Requires CMake (>= 3.16), GCC or Clang, `pkg-config`, and `libusb-1.0` headers (e.g. `sudo apt install libusb-1.0-0-dev`).
+Requires CMake (>= 3.16), GCC or Clang, `pkg-config`, `libusb-1.0` headers, and GNU Radio 3.10 with NumPy (e.g. `sudo apt install libusb-1.0-0-dev gnuradio`). For a C SDK-only build, pass `-DKTOS_ENABLE_GNURADIO=OFF`.
 
 ```sh
 # Configure and build libkcsdr.so with offline unit tests
@@ -93,6 +94,15 @@ cmake --build build-linux -j "$(nproc)"
 # Run offline unit tests (against tests/libusb-1.0.so.0 emulator)
 ctest --test-dir build-linux --output-on-failure
 ```
+
+## GNU Radio
+
+GNU Radio support is enabled by default. Select the Python interpreter used
+by GNU Radio with `-DPython3_EXECUTABLE=...`. This includes the `kc908` Python package,
+GRC Source/Sink blocks, a receive example, installation rules, and emulator-backed
+CTest coverage. Pass `-DKTOS_ENABLE_GNURADIO=OFF` to build only the C SDK.
+
+See [GNU Radio setup, parameters and examples](gnuradio/README.md).
 
 ## Quick Start (C)
 

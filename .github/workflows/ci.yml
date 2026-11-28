@@ -49,6 +49,7 @@ jobs:
           set -euo pipefail
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DKTOS_ENABLE_GNURADIO=OFF \
             -DBUILD_TESTING=ON
           cmake --build build --parallel
           ctest --test-dir build --output-on-failure
@@ -113,6 +114,14 @@ jobs:
           Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $stage 'LICENSE')
           Copy-Item -LiteralPath 'README.md' -Destination (Join-Path $stage 'README.md')
           Copy-Item -LiteralPath 'README.zh-CN.md' -Destination (Join-Path $stage 'README.zh-CN.md')
+
+          foreach ($subdir in @('python/kc908', 'grc', 'examples')) {
+              New-Item -ItemType Directory -Path (Join-Path $stage "gnuradio/$subdir") -Force | Out-Null
+          }
+          Copy-Item -Path 'gnuradio/python/kc908/*.py' -Destination (Join-Path $stage 'gnuradio/python/kc908')
+          Copy-Item -Path 'gnuradio/grc/*.block.yml' -Destination (Join-Path $stage 'gnuradio/grc')
+          Copy-Item -Path 'gnuradio/examples/*.py' -Destination (Join-Path $stage 'gnuradio/examples')
+          Copy-Item -LiteralPath 'gnuradio/README.md' -Destination (Join-Path $stage 'gnuradio/README.md')
 
           $forbidden = Get-ChildItem -LiteralPath $stage -Recurse -File |
               Where-Object { $_.Name -match 'FTD3XX|libusb' }
@@ -195,6 +204,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cmake ninja-build pkg-config libusb-1.0-0-dev ${{ matrix.cross_pkg }}
+          if [[ -z "${{ matrix.emulator }}" ]]; then
+            sudo apt-get install -y --no-install-recommends gnuradio
+          fi
 
       - name: Configure, build, and run offline tests
         run: |
@@ -213,7 +225,10 @@ jobs:
               -DCMAKE_SYSTEM_NAME=Linux
               -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.processor }}
               "-DCMAKE_CROSSCOMPILING_EMULATOR=${{ matrix.emulator }}"
+              -DKTOS_ENABLE_GNURADIO=OFF
             )
+          else
+            cmake_args+=(-DPython3_EXECUTABLE=/usr/bin/python3)
           fi
 
           cmake "${cmake_args[@]}"
@@ -260,6 +275,12 @@ jobs:
           cp -f include/ktos_sdk.h "${stage}/include/ktos_sdk.h"
           cp -f include/image_protocol.h "${stage}/include/image_protocol.h"
           cp -f LICENSE README.md README.zh-CN.md "${stage}/"
+
+          mkdir -p "${stage}/gnuradio/python/kc908" "${stage}/gnuradio/grc" "${stage}/gnuradio/examples"
+          cp -f gnuradio/python/kc908/*.py "${stage}/gnuradio/python/kc908/"
+          cp -f gnuradio/grc/*.block.yml "${stage}/gnuradio/grc/"
+          cp -f gnuradio/examples/*.py "${stage}/gnuradio/examples/"
+          cp -f gnuradio/README.md "${stage}/gnuradio/README.md"
 
           if find "${stage}" -type f \( -iname '*libusb*' -o -iname '*FTD3XX*' \) | grep -q .; then
             echo "Forbidden test/vendor binary found in package" >&2

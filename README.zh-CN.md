@@ -12,6 +12,7 @@
 - **高速重叠 IQ 流**：使用四个 1 MiB 重叠接收槽持续读取 FT601 数据，调用方可按任意 4 字节对齐块消费。
 - **控制 RPC 与二进制传输**：提供带 CRC-32 校验的分片 JSON 控制接口（`ktos_rpc`）、调制分析（VSA）、软件 GPS L1 与 DRM30/DRM+ 数字广播封装接口（`ktos_vsa_*`、`ktos_gps_*`、`ktos_drm_*`），以及带整文件 SHA-256 校验的图片上传/下载接口（`ktos_image_upload`、`ktos_image_download`、`ktos_image_request`）。
 - **原有上位机兼容**：导出 `kcsdr_init()` 26 项 Windows 1.3.4 函数表，供原有 32/64 位桌面软件直接替换使用（不含网络连接及私有工厂校准接口）。
+- **GNU Radio 3.10**：默认启用 Python complex64 IQ 收发块及 GNU Radio Companion 图形定义，通过公开 C ABI 支持 Windows 和 Linux。
 
 ## 目录结构
 
@@ -61,11 +62,19 @@
 
 > **注意**：测试构建产生的 `tests/FTD3XX.dll`（Windows）与 `tests/libusb-1.0.so.0`（Linux）仅为离线模拟器，切勿复制到实际部署目录。
 
+## GNU Radio
+
+默认启用 GNU Radio 支持，通过 `-DPython3_EXECUTABLE=...` 选择 GNU Radio 使用的
+Python 解释器，即可构建、测试和安装 `kc908` Python 模块与 GRC 收发块。构建环境需有
+GNU Radio 3.10 和 NumPy；只构建 C SDK 时可传入 `-DKTOS_ENABLE_GNURADIO=OFF`。
+
+详见 [GNU Radio 安装、参数及示例（含中文说明）](gnuradio/README.md)。
+
 ## 编译与测试
 
 ### Windows
 
-需要 CMake（>= 3.16）以及支持 `-m32`/`-m64` 和 `windres` 的 MinGW-w64 GCC 工具链。
+需要 CMake（>= 3.16）、支持 `-m32`/`-m64` 和 `windres` 的 MinGW-w64 GCC 工具链，以及所选 Python 环境中的 GNU Radio 3.10 和 NumPy。只构建 C SDK 时可加 `-DKTOS_ENABLE_GNURADIO=OFF`。
 
 ```powershell
 # 配置并编译 64 位 kcsdr.dll 及单元测试
@@ -83,7 +92,7 @@ ctest --test-dir build-x64 --output-on-failure
 
 ### Linux
 
-需要 CMake（>= 3.16）、GCC/Clang、`pkg-config` 及 `libusb-1.0` 开发包（如 `sudo apt install libusb-1.0-0-dev`）。
+需要 CMake（>= 3.16）、GCC/Clang、`pkg-config`、`libusb-1.0` 开发包，以及 GNU Radio 3.10 和 NumPy（如 `sudo apt install libusb-1.0-0-dev gnuradio`）。只构建 C SDK 时可加 `-DKTOS_ENABLE_GNURADIO=OFF`。
 
 ```sh
 # 配置并编译 libkcsdr.so 及单元测试

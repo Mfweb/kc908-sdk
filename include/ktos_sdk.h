@@ -321,12 +321,18 @@ KTOS_API int KTOS_CALL ktos_image_download(ktos_device *device, const char *devi
 KTOS_API int KTOS_CALL ktos_iq_command(ktos_device *device, uint32_t opcode, const void *data,
                                        uint32_t bytes);
 
+/* Raw samples are interleaved little-endian signed int16 I, Q (4 bytes/pair).
+ * `bytes` must be nonzero and a multiple of 4. `*actual` is a byte count, not
+ * a sample count. A failed TX call may have sent a prefix; do not replay it.
+ * Send the appropriate RX/TX START command before transferring samples. */
 KTOS_API int KTOS_CALL ktos_iq_read(ktos_device *device, void *data, uint32_t bytes,
                                     uint32_t *actual);
 
 KTOS_API int KTOS_CALL ktos_iq_write(ktos_device *device, const void *data, uint32_t bytes,
                                      uint32_t *actual);
 
+/* Stops both RX and TX, aborting queued RX I/O. Wait for all concurrent SDK
+ * requests to return before closing the device. */
 KTOS_API int KTOS_CALL ktos_iq_stop(ktos_device *device);
 
 /* -------------------------------------------------------------------------- */

@@ -1,0 +1,81 @@
+id: kc908_source
+label: KC908 Source
+category: '[KC908]'
+flags: [python, throttle]
+
+parameters:
+-   id: device_index
+    label: Device Index
+    dtype: int
+    default: 0
+
+-   id: sample_rate
+    label: Sample Rate (Hz)
+    dtype: int
+    default: 2000000
+
+-   id: center_freq
+    label: Center Frequency (Hz)
+    dtype: int
+    default: 100000000
+
+-   id: port
+    label: Physical Port
+    dtype: int
+    default: 2
+    options: [1, 2]
+    option_labels: ['PORT1', 'PORT2']
+
+-   id: attenuation
+    label: Attenuation (dB)
+    dtype: int
+    default: 0
+
+-   id: if_gain
+    label: IF Gain (raw byte)
+    dtype: int
+    default: 0
+
+-   id: amp
+    label: RX Amplifier
+    dtype: int
+    default: 0
+    options: [-1, 0, 1]
+    option_labels: ['0 dB', '20 dB', '40 dB']
+
+-   id: library_path
+    label: SDK Library Path
+    dtype: string
+    default: ''
+
+-   id: buffer_samples
+    label: Buffer Samples
+    dtype: int
+    default: 16384
+
+outputs:
+-   domain: stream
+    dtype: complex
+
+asserts:
+- ${ 0 <= device_index <= 0xFFFFFFFF }
+- ${ 2000000 <= sample_rate <= 40000000 }
+- ${ 0 <= center_freq <= 0x7FFFFFFFFFFFFFFF }
+- ${ 1 <= port <= 2 }
+- ${ 0 <= attenuation <= 31 }
+- ${ 0 <= if_gain <= 255 }
+- ${ -1 <= amp <= 1 }
+- ${ 1 <= buffer_samples <= 262144 }
+
+templates:
+    imports: import kc908
+    make: kc908.source(${device_index}, ${sample_rate}, ${center_freq}, ${port}, ${attenuation}, ${if_gain}, ${amp}, ${library_path}, ${buffer_samples})
+    callbacks:
+    - set_sample_rate(${sample_rate})
+    - set_center_freq(${center_freq})
+    - set_port(${port})
+    - set_attenuation(${attenuation})
+    - set_if_gain(${if_gain})
+    - set_amp(${amp})
+
+file_format: 1
